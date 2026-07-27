@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+openpyxl
+sacrebleu
+sentence-transformers
+unbabel-comet
+scikit-learn
