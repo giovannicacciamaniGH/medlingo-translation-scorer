@@ -1,7 +1,7 @@
 """
-MedLingo Translation Scorer — Streamlit app.
+LLM Translation Scorer — Streamlit app.
 
-Upload a spreadsheet with the original script and the MedLingo output;
+Upload a spreadsheet with the original script and the LLM output;
 get corpus-level and per-sentence translation scores:
 BLEU, chrF, TER (sacrebleu), semantic similarity (sentence embeddings,
 per TextSim_MTQE) and COMET (Unbabel wmt22-comet-da).
@@ -17,7 +17,7 @@ import pandas as pd
 import sacrebleu
 import streamlit as st
 
-st.set_page_config(page_title="MedLingo Translation Scorer",
+st.set_page_config(page_title="LLM Translation Scorer",
                    page_icon="🩺", layout="wide")
 
 
@@ -56,12 +56,12 @@ def meaning_verdict(sim):
 
 @st.cache_data(show_spinner=False)
 def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
-    """srcs = original scripts; cands = MedLingo output; gts = ground-truth
+    """srcs = original scripts; cands = LLM output; gts = ground-truth
     human translations (optional).
 
-    BLEU and COMET are single scores comparing MedLingo against the ground
+    BLEU and COMET are single scores comparing LLM against the ground
     truth (or the original when no ground truth is given). chrF, TER and
-    semantic similarity are computed against the ORIGINAL — for MedLingo,
+    semantic similarity are computed against the ORIGINAL — for LLM,
     and (when provided) also for the ground truth, so machine and human can
     be compared on the same basis."""
     srcs, cands, gts = list(srcs), list(cands), list(gts)
@@ -104,7 +104,7 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
         row = {"#": i + 1, "Original script": s_}
         if has_gt:
             row["Ground truth"] = gts[i]
-        row.update({"MedLingo output": c,
+        row.update({"LLM output": c,
                     "BLEU": round(s, 1), "Wording": interpret(s),
                     "Semantic (%)": round(sim * 100),
                     "Meaning": meaning_verdict(sim),
@@ -145,7 +145,8 @@ def autodetect(cols):
         return None
     src = find(["original", "script", "source", "doctor", "english",
                 "dialogue", "dialog"])
-    cand = find(["medlingo", "output", "candidate"], exclude=(src,))
+    cand = find(["llm", "medlingo", "output", "candidate", "generated",
+                 "gpt", "ai"], exclude=(src,))
     gt = find(["ground", "truth", "gold", "human", "reference"],
               exclude=(src, cand))
     # Fill any undetected role with the first unclaimed column — never
@@ -161,16 +162,16 @@ def autodetect(cols):
 
 # ---------------------------------------------------------------- UI
 
-st.title("🩺 MedLingo Translation Scorer")
-st.caption("Upload a spreadsheet with the original script, the MedLingo output, "
+st.title("🩺 LLM Translation Scorer")
+st.caption("Upload a spreadsheet with the original script, the LLM output, "
            "and — optionally — a ground-truth human reference. You get overall "
            "translation scores (BLEU, chrF, TER, semantic similarity, COMET) and "
-           "a score for every sentence. With a ground truth, MedLingo is scored "
+           "a score for every sentence. With a ground truth, LLM is scored "
            "against the human reference; without one, it is scored against the "
            "original script.")
 
 uploaded = st.file_uploader(
-    "Excel or CSV with two columns (original script, MedLingo output) "
+    "Excel or CSV with two columns (original script, LLM output) "
     "or three (+ ground truth)",
     type=["xlsx", "xlsm", "xls", "csv", "tsv"])
 
@@ -191,7 +192,7 @@ if uploaded:
 
     if len(df.columns) < 2:
         st.error("The file needs at least two columns "
-                 "(original script and MedLingo output).")
+                 "(original script and LLM output).")
         st.stop()
 
     cols = list(df.columns)
@@ -199,7 +200,7 @@ if uploaded:
     c1, c2, c3 = st.columns(3)
     src_col = c1.selectbox("Original script (source) column", cols,
                            index=cols.index(src_default))
-    cand_col = c2.selectbox("MedLingo output column", cols,
+    cand_col = c2.selectbox("LLM output column", cols,
                             index=cols.index(cand_default))
     NONE = "— none (score against the original) —"
     gt_opts = [NONE] + cols
@@ -223,16 +224,16 @@ if uploaded:
         st.stop()
 
     if gt_col:
-        st.caption("**3-column mode:** BLEU compares MedLingo against the "
+        st.caption("**3-column mode:** BLEU compares LLM against the "
                    "**ground truth**, and COMET uses its full triplet (source = "
-                   "original, translation = MedLingo, reference = ground truth) "
+                   "original, translation = LLM, reference = ground truth) "
                    "— one score each. chrF, TER and semantic similarity are "
                    "computed **against the original** for both translations — "
-                   "MedLingo vs original and ground truth vs original — so "
+                   "LLM vs original and ground truth vs original — so "
                    "machine and human can be compared on the same basis.")
     else:
         st.caption("**2-column mode:** no ground truth selected — all scores "
-                   "compare MedLingo against the original script (for COMET, the "
+                   "compare LLM against the original script (for COMET, the "
                    "original serves as both source and reference).")
 
     with st.spinner(f"Scoring {len(srcs)} sentences…"):
@@ -256,7 +257,7 @@ if uploaded:
                            "0–100, higher = better quality.")
 
         # Groups 2 & 3 — same metrics, two comparisons, aligned columns
-        st.markdown(f"#### 2️⃣ MedLingo vs original — “{cand_col}” vs “{src_col}”")
+        st.markdown(f"#### 2️⃣ LLM vs original — “{cand_col}” vs “{src_col}”")
         m1, m2, m3 = st.columns(3)
         m1.metric("Mean semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
                   help=f"{vs_orig} Meaning similarity from sentence embeddings.")
@@ -395,15 +396,15 @@ if uploaded:
     buf = io.BytesIO()
     bleu_target = "ground truth" if gt_col else "original"
     summary_df = pd.DataFrame({
-        "Metric": [f"Corpus BLEU (MedLingo vs {bleu_target})",
+        "Metric": [f"Corpus BLEU (LLM vs {bleu_target})",
                    "Sentences scored", "Brevity penalty",
                    "1-gram precision", "2-gram precision", "3-gram precision",
                    "4-gram precision", "Mean sentence BLEU",
-                   "Mean semantic similarity (MedLingo vs original)",
-                   f"COMET system score (src=original, mt=MedLingo, "
+                   "Mean semantic similarity (LLM vs original)",
+                   f"COMET system score (src=original, mt=LLM, "
                    f"ref={bleu_target})",
-                   "Corpus chrF (MedLingo vs original)",
-                   "Corpus TER (MedLingo vs original)",
+                   "Corpus chrF (LLM vs original)",
+                   "Corpus TER (LLM vs original)",
                    "Mean semantic similarity (ground truth vs original)",
                    "Corpus chrF (ground truth vs original)",
                    "Corpus TER (ground truth vs original)"],
@@ -429,7 +430,7 @@ if uploaded:
             "simplification (TER: lower = closer, 0 = identical). Semantic "
             "similarity and COMET look past wording toward *meaning*: "
             "“myocardial infarction” → “heart attack” scores low on BLEU but high "
-            "on both. The sweet spot for MedLingo: **high semantic/COMET + "
+            "on both. The sweet spot for LLM: **high semantic/COMET + "
             "low/moderate BLEU** = meaning preserved, wording simplified. Rows "
             "flagged *Possible meaning change* deserve a manual read.")
 
@@ -439,11 +440,11 @@ st.subheader("Score legend & references")
 st.markdown("""
 | Score | Range | Columns compared | What it measures | Code | Publication |
 |---|---|---|---|---|---|
-| **BLEU** | 0–100, higher = more similar wording | MedLingo output **vs** original script; in 3-column mode also ground truth **vs** original (human benchmark, "GT" columns) | Overlap of word sequences (1–4-gram precision) with the original, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
-| **chrF** | 0–100, higher = more similar wording | MedLingo output **vs** original; also ground truth **vs** original (benchmark) | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
-| **TER** | 0–100+, **lower** = closer (0 = identical) | MedLingo output **vs** original; also ground truth **vs** original (benchmark) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the translation into the original. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
-| **Semantic similarity** | 0–100%, higher = same meaning | MedLingo output **vs** original; also ground truth **vs** original (benchmark) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
-| **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = MedLingo output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
+| **BLEU** | 0–100, higher = more similar wording | Single score: LLM output **vs** ground truth (or the original script if no ground truth is selected) | Overlap of word sequences (1–4-gram precision) with the reference, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
+| **chrF** | 0–100, higher = more similar wording | LLM output **vs** original; also ground truth **vs** original (benchmark) | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
+| **TER** | 0–100+, **lower** = closer (0 = identical) | LLM output **vs** original; also ground truth **vs** original (benchmark) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the translation into the original. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
+| **Semantic similarity** | 0–100%, higher = same meaning | LLM output **vs** original; also ground truth **vs** original (benchmark) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
+| **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = LLM output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
 """)
 st.caption(
     "**Implementation signatures** (for exact reproducibility): "
