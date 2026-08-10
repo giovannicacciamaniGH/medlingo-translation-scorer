@@ -445,3 +445,15 @@ st.markdown("""
 | **Semantic similarity** | 0–100%, higher = same meaning | MedLingo output **vs** original; also ground truth **vs** original (benchmark) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
 | **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = MedLingo output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
 """)
+st.caption(
+    "**Implementation signatures** (for exact reproducibility): "
+    "BLEU `nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp` · "
+    "chrF `nrefs:1|case:mixed|eff:yes|nc:6|nw:0` (chrF2, β=2, character-only, "
+    "verified against Popović's reference script `chrF++.py -nw 0 -b 2`) · "
+    "TER `nrefs:1|case:lc|tok:tercom|norm:no|punct:yes` · "
+    "semantic similarity: `sentence-transformers` "
+    "paraphrase-multilingual-MiniLM-L12-v2, cosine similarity · "
+    "COMET: `Unbabel/wmt22-comet-da` via `comet.load_from_checkpoint(...)"
+    ".predict(batch_size=8, gpus=0)`. Corpus scores are computed with "
+    "sacrebleu's corpus methods (not averaged sentence scores); per-sentence "
+    "BLEU uses sacrebleu's default exponential smoothing.")
