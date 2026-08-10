@@ -130,12 +130,17 @@ def autodetect(cols):
 # ---------------------------------------------------------------- UI
 
 st.title("🩺 MedLingo Translation Scorer")
-st.caption("Upload a spreadsheet with the original script and the MedLingo output — "
-           "get overall translation scores (BLEU, chrF, TER, semantic similarity, "
-           "COMET) and a score for every sentence.")
+st.caption("Upload a spreadsheet with the original script, the MedLingo output, "
+           "and — optionally — a ground-truth human reference. You get overall "
+           "translation scores (BLEU, chrF, TER, semantic similarity, COMET) and "
+           "a score for every sentence. With a ground truth, MedLingo is scored "
+           "against the human reference; without one, it is scored against the "
+           "original script.")
 
-uploaded = st.file_uploader("Excel or CSV with the two columns",
-                            type=["xlsx", "xlsm", "xls", "csv", "tsv"])
+uploaded = st.file_uploader(
+    "Excel or CSV with two columns (original script, MedLingo output) "
+    "or three (+ ground truth)",
+    type=["xlsx", "xlsm", "xls", "csv", "tsv"])
 
 use_comet = st.toggle("Include COMET (slower; needs the 2 GB model)", value=True)
 
@@ -199,17 +204,23 @@ if uploaded:
         table, s = score_pairs(tuple(srcs), tuple(cands), tuple(gts), use_comet)
 
     # ---- headline scores, one row
+    ref_name = f"“{gt_col}” (ground truth)" if gt_col else f"“{src_col}” (original)"
+    vs = f"Compares “{cand_col}” vs {ref_name}."
     labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
               "chrF (corpus)", "TER (corpus, lower = closer)"]
     values = [f"{s['bleu']:.1f}", f"{s['sem_mean'] * 100:.0f}%",
               f"{s['chrf']:.1f}", f"{s['ter']:.1f}"]
-    helps = [s["bleu_label"], "meaning", "", ""]
+    helps = [f"{s['bleu_label']}. {vs} Word-sequence overlap.",
+             f"{vs} Meaning similarity from sentence embeddings.",
+             f"{vs} Character n-gram overlap.",
+             f"{vs} Edits needed to match the reference — lower is closer."]
     if s["comet"] is not None:
         labels.insert(2, "COMET (system, 0–100)")
         values.insert(2, f"{s['comet'] * 100:.0f}")
-        helps.insert(2, "")
+        helps.insert(2, f"Uses the full triplet: source = “{src_col}”, "
+                        f"translation = “{cand_col}”, reference = {ref_name}.")
     for col, lab, val, hlp in zip(st.columns(len(labels)), labels, values, helps):
-        col.metric(lab, val, help=hlp or None)
+        col.metric(lab, val, help=hlp)
 
     with st.expander("More statistics"):
         m1, m2, m3, m4 = st.columns(4)
@@ -242,7 +253,48 @@ if uploaded:
         view = view[view["Wording"] == pick_label]
     st.caption(f"{len(view)} of {len(table)} sentences shown")
 
-    st.dataframe(view, use_container_width=True, hide_index=True, height=520)
+    WORDING_COLORS = {
+        "Almost no overlap":               "background-color:#ffebe9; color:#cf222e",
+        "Low overlap":                     "background-color:#ffebe9; color:#cf222e",
+        "Gist preserved, heavily reworded":"background-color:#fff1e5; color:#bc4c00",
+        "Moderate overlap":                "background-color:#fff8c5; color:#7d4e00",
+        "High overlap":                    "background-color:#ddf4ff; color:#0969da",
+        "Very high overlap":               "background-color:#dafbe1; color:#1a7f37",
+        "Near-identical":                  "background-color:#dafbe1; color:#1a7f37",
+    }
+    MEANING_COLORS = {
+        "Possible meaning change":   "background-color:#ffebe9; color:#cf222e",
+        "Mostly preserved — review": "background-color:#fff8c5; color:#7d4e00",
+        "Meaning preserved":         "background-color:#dafbe1; color:#1a7f37",
+    }
+    chip = "; border-radius:999px; text-align:center; font-weight:600"
+    styled = view.style.map(
+        lambda v: WORDING_COLORS.get(v, "") + chip, subset=["Wording"]
+    ).map(
+        lambda v: MEANING_COLORS.get(v, "") + chip, subset=["Meaning"]
+    ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF": "{:.1f}",
+                                "TER": "{:.1f}", "Semantic (%)": "{:.0f}",
+                                "COMET": "{:.0f}"}.items()
+              if k in view.columns}, na_rep="")
+    col_help = {
+        "BLEU": st.column_config.NumberColumn(
+            "BLEU", help=f"{vs} Word-sequence overlap, 0–100."),
+        "Wording": st.column_config.TextColumn(
+            "Wording", help=f"Judgment of the BLEU score. {vs}"),
+        "Semantic (%)": st.column_config.NumberColumn(
+            "Semantic (%)", help=f"{vs} Meaning similarity, 0–100%."),
+        "Meaning": st.column_config.TextColumn(
+            "Meaning", help=f"Verdict from semantic similarity. {vs}"),
+        "chrF": st.column_config.NumberColumn(
+            "chrF", help=f"{vs} Character n-gram overlap, 0–100."),
+        "TER": st.column_config.NumberColumn(
+            "TER", help=f"{vs} Edit rate — lower = closer, 0 = identical."),
+        "COMET": st.column_config.NumberColumn(
+            "COMET", help=f"Neural quality score. Source = “{src_col}”, "
+                          f"translation = “{cand_col}”, reference = {ref_name}."),
+    }
+    st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
+                 column_config=col_help)
 
     # ---- download
     buf = io.BytesIO()
