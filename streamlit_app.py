@@ -59,19 +59,19 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
     """srcs = original scripts; cands = MedLingo output; gts = ground-truth
     human translations (optional).
 
-    BLEU/chrF/TER/semantic are computed against the ORIGINAL — for MedLingo,
+    BLEU and COMET are single scores comparing MedLingo against the ground
+    truth (or the original when no ground truth is given). chrF, TER and
+    semantic similarity are computed against the ORIGINAL — for MedLingo,
     and (when provided) also for the ground truth, so machine and human can
-    be compared on the same basis. COMET is a single score using its proper
-    triplet: src = original, mt = MedLingo, ref = ground truth (or original
-    when no ground truth is given)."""
+    be compared on the same basis."""
     srcs, cands, gts = list(srcs), list(cands), list(gts)
     has_gt = len(gts) > 0
+    bleu_refs = gts if has_gt else srcs
 
-    corpus = sacrebleu.corpus_bleu(cands, [srcs])
+    corpus = sacrebleu.corpus_bleu(cands, [bleu_refs])
     corpus_chrf = sacrebleu.corpus_chrf(cands, [srcs])
     corpus_ter = sacrebleu.corpus_ter(cands, [srcs])
     if has_gt:
-        gt_bleu = sacrebleu.corpus_bleu(gts, [srcs])
         gt_chrf = sacrebleu.corpus_chrf(gts, [srcs])
         gt_ter = sacrebleu.corpus_ter(gts, [srcs])
 
@@ -98,7 +98,8 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
 
     rows = []
     for i, (s_, c) in enumerate(zip(srcs, cands)):
-        s = sacrebleu.sentence_bleu(c, [s_], smooth_method="exp").score
+        s = sacrebleu.sentence_bleu(c, [bleu_refs[i]],
+                                    smooth_method="exp").score
         sim = float(cosines[i])
         row = {"#": i + 1, "Original script": s_}
         if has_gt:
@@ -111,9 +112,11 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                     "TER": round(sacrebleu.sentence_ter(c, [s_]).score, 1)})
         if has_gt:
             g = gts[i]
-            row["BLEU (GT)"] = round(
-                sacrebleu.sentence_bleu(g, [s_], smooth_method="exp").score, 1)
+            gt_sent_bleu = sacrebleu.sentence_bleu(
+                g, [s_], smooth_method="exp").score
+            row["Wording (GT)"] = interpret(gt_sent_bleu)
             row["Semantic GT (%)"] = round(float(gt_cosines[i]) * 100)
+            row["Meaning (GT)"] = meaning_verdict(float(gt_cosines[i]))
             row["chrF (GT)"] = round(sacrebleu.sentence_chrf(g, [s_]).score, 1)
             row["TER (GT)"] = round(sacrebleu.sentence_ter(g, [s_]).score, 1)
         if comet_scores is not None:
@@ -126,7 +129,6 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                "sem_mean": float(np.mean(cosines)),
                "sent_bleu_mean": float(np.mean([r["BLEU"] for r in rows])),
                "comet": comet_system,
-               "gt_bleu": gt_bleu.score if has_gt else None,
                "gt_chrf": gt_chrf.score if has_gt else None,
                "gt_ter": gt_ter.score if has_gt else None,
                "gt_sem_mean": float(np.mean(gt_cosines)) if has_gt else None}
@@ -141,12 +143,19 @@ def autodetect(cols):
             if any(k in str(c).lower() for k in keywords):
                 return c
         return None
-    src = find(["original", "script", "source", "doctor", "english"])
+    src = find(["original", "script", "source", "doctor", "english",
+                "dialogue", "dialog"])
     cand = find(["medlingo", "output", "candidate"], exclude=(src,))
     gt = find(["ground", "truth", "gold", "human", "reference"],
               exclude=(src, cand))
-    if src is None or cand is None or src == cand:
-        src, cand = cols[0], cols[1]
+    # Fill any undetected role with the first unclaimed column — never
+    # overwrite a role that was already detected.
+    if src is None:
+        src = next((c for c in cols if c not in (cand, gt)), cols[0])
+    if cand is None:
+        cand = next((c for c in cols if c not in (src, gt)), cols[1])
+    if src == cand:
+        src, cand, gt = cols[0], cols[1], None
     return src, cand, gt
 
 
@@ -214,12 +223,13 @@ if uploaded:
         st.stop()
 
     if gt_col:
-        st.caption("**3-column mode:** BLEU, chrF, TER and semantic similarity "
-                   "are computed **against the original** for both translations "
-                   "— MedLingo vs original and ground truth vs original — so "
-                   "machine and human can be compared on the same basis. COMET "
-                   "is a single score using its full triplet (source = original, "
-                   "translation = MedLingo, reference = ground truth).")
+        st.caption("**3-column mode:** BLEU compares MedLingo against the "
+                   "**ground truth**, and COMET uses its full triplet (source = "
+                   "original, translation = MedLingo, reference = ground truth) "
+                   "— one score each. chrF, TER and semantic similarity are "
+                   "computed **against the original** for both translations — "
+                   "MedLingo vs original and ground truth vs original — so "
+                   "machine and human can be compared on the same basis.")
     else:
         st.caption("**2-column mode:** no ground truth selected — all scores "
                    "compare MedLingo against the original script (for COMET, the "
@@ -229,45 +239,59 @@ if uploaded:
         table, s = score_pairs(tuple(srcs), tuple(cands), tuple(gts), use_comet)
 
     # ---- headline scores
-    comet_ref = f"“{gt_col}” (ground truth)" if gt_col else f"“{src_col}” (original)"
-    vs = f"Compares “{cand_col}” vs “{src_col}” (original)."
-    labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
-              "chrF (corpus)", "TER (corpus, lower = closer)"]
-    values = [f"{s['bleu']:.1f}", f"{s['sem_mean'] * 100:.0f}%",
-              f"{s['chrf']:.1f}", f"{s['ter']:.1f}"]
-    helps = [f"{s['bleu_label']}. {vs} Word-sequence overlap.",
-             f"{vs} Meaning similarity from sentence embeddings.",
-             f"{vs} Character n-gram overlap.",
-             f"{vs} Edits needed to match the original — lower is closer."]
-    if s["comet"] is not None:
-        labels.insert(2, "COMET")
-        values.insert(2, f"{s['comet'] * 100:.0f}")
-        helps.insert(2, f"Single score, full triplet: source = “{src_col}”, "
-                        f"translation = “{cand_col}”, reference = {comet_ref}. "
-                        "0–100, higher = better quality.")
-    if gt_col:
-        st.markdown(f"**MedLingo vs original** — “{cand_col}” scored against "
-                    f"“{src_col}”")
-    for col, lab, val, hlp in zip(st.columns(len(labels)), labels, values, helps):
-        col.metric(lab, val, help=hlp)
+    ref_name = f"“{gt_col}” (ground truth)" if gt_col else f"“{src_col}” (original)"
+    vs_orig = f"Compares “{cand_col}” vs “{src_col}” (original)."
 
     if gt_col:
-        st.markdown(f"**Human benchmark: ground truth vs original** — "
-                    f"“{gt_col}” scored against “{src_col}” with the same "
-                    "metrics, for a machine-vs-human comparison")
-        gvs = f"Compares “{gt_col}” vs “{src_col}” (original)."
-        glabels = ["BLEU (corpus)", "Mean semantic similarity",
-                   "chrF (corpus)", "TER (corpus, lower = closer)"]
-        gvalues = [f"{s['gt_bleu']:.1f}", f"{s['gt_sem_mean'] * 100:.0f}%",
-                   f"{s['gt_chrf']:.1f}", f"{s['gt_ter']:.1f}"]
-        ghelps = [f"{gvs} Word-sequence overlap.",
-                  f"{gvs} Meaning similarity from sentence embeddings.",
-                  f"{gvs} Character n-gram overlap.",
-                  f"{gvs} Edits needed to match the original — lower is closer."]
-        gcols = st.columns(len(labels))
+        # Group 1 — single scores (computed once, against the ground truth)
+        st.markdown(f"#### 1️⃣ Single scores — “{cand_col}” vs “{gt_col}”")
+        c1, c2, _ = st.columns(3)
+        c1.metric("Overall BLEU (corpus)", f"{s['bleu']:.1f}",
+                  help=f"{s['bleu_label']}. Computed once: “{cand_col}” vs "
+                       f"“{gt_col}” (ground truth). Word-sequence overlap.")
         if s["comet"] is not None:
-            gcols = [c for i, c in enumerate(gcols) if i != 2]  # skip COMET slot
-        for col, lab, val, hlp in zip(gcols, glabels, gvalues, ghelps):
+            c2.metric("COMET", f"{s['comet'] * 100:.0f}",
+                      help=f"Computed once, full triplet: source = “{src_col}”, "
+                           f"translation = “{cand_col}”, reference = “{gt_col}”. "
+                           "0–100, higher = better quality.")
+
+        # Groups 2 & 3 — same metrics, two comparisons, aligned columns
+        st.markdown(f"#### 2️⃣ MedLingo vs original — “{cand_col}” vs “{src_col}”")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Mean semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
+                  help=f"{vs_orig} Meaning similarity from sentence embeddings.")
+        m2.metric("chrF (corpus)", f"{s['chrf']:.1f}",
+                  help=f"{vs_orig} Character n-gram overlap.")
+        m3.metric("TER (corpus, lower = closer)", f"{s['ter']:.1f}",
+                  help=f"{vs_orig} Edits needed to match the original.")
+
+        gvs = f"Compares “{gt_col}” vs “{src_col}” (original)."
+        st.markdown(f"#### 3️⃣ Ground truth vs original — “{gt_col}” vs "
+                    f"“{src_col}” (human benchmark)")
+        g1, g2, g3 = st.columns(3)
+        g1.metric("Mean semantic similarity", f"{s['gt_sem_mean'] * 100:.0f}%",
+                  help=f"{gvs} Meaning similarity from sentence embeddings.")
+        g2.metric("chrF (corpus)", f"{s['gt_chrf']:.1f}",
+                  help=f"{gvs} Character n-gram overlap.")
+        g3.metric("TER (corpus, lower = closer)", f"{s['gt_ter']:.1f}",
+                  help=f"{gvs} Edits needed to match the original.")
+    else:
+        labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
+                  "chrF (corpus)", "TER (corpus, lower = closer)"]
+        values = [f"{s['bleu']:.1f}", f"{s['sem_mean'] * 100:.0f}%",
+                  f"{s['chrf']:.1f}", f"{s['ter']:.1f}"]
+        helps = [f"{s['bleu_label']}. {vs_orig} Word-sequence overlap.",
+                 f"{vs_orig} Meaning similarity from sentence embeddings.",
+                 f"{vs_orig} Character n-gram overlap.",
+                 f"{vs_orig} Edits needed to match the original."]
+        if s["comet"] is not None:
+            labels.insert(2, "COMET")
+            values.insert(2, f"{s['comet'] * 100:.0f}")
+            helps.insert(2, f"Full triplet with the original as both source "
+                            f"and reference (no ground truth selected). "
+                            "0–100, higher = better quality.")
+        for col, lab, val, hlp in zip(st.columns(len(labels)), labels, values,
+                                      helps):
             col.metric(lab, val, help=hlp)
 
     with st.expander("More statistics"):
@@ -316,39 +340,48 @@ if uploaded:
         "Meaning preserved":         "background-color:#dafbe1; color:#1a7f37",
     }
     chip = "; border-radius:999px; text-align:center; font-weight:600"
+    wording_cols = [c for c in ("Wording", "Wording (GT)") if c in view.columns]
+    meaning_cols = [c for c in ("Meaning", "Meaning (GT)") if c in view.columns]
     styled = view.style.map(
-        lambda v: WORDING_COLORS.get(v, "") + chip, subset=["Wording"]
+        lambda v: WORDING_COLORS.get(v, "") + chip, subset=wording_cols
     ).map(
-        lambda v: MEANING_COLORS.get(v, "") + chip, subset=["Meaning"]
+        lambda v: MEANING_COLORS.get(v, "") + chip, subset=meaning_cols
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF": "{:.1f}",
                                 "TER": "{:.1f}", "Semantic (%)": "{:.0f}",
-                                "BLEU (GT)": "{:.1f}", "chrF (GT)": "{:.1f}",
-                                "TER (GT)": "{:.1f}",
+                                "chrF (GT)": "{:.1f}", "TER (GT)": "{:.1f}",
                                 "Semantic GT (%)": "{:.0f}",
                                 "COMET": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
+    bleu_vs = f"Compares “{cand_col}” vs {ref_name}."
     col_help = {
         "BLEU": st.column_config.NumberColumn(
-            "BLEU", help=f"{vs} Word-sequence overlap, 0–100."),
+            "BLEU", help=f"Single score. {bleu_vs} Word-sequence overlap, "
+                         "0–100."),
         "Wording": st.column_config.TextColumn(
-            "Wording", help=f"Judgment of the BLEU score. {vs}"),
+            "Wording", help=f"Judgment of the BLEU score. {bleu_vs}"),
         "Semantic (%)": st.column_config.NumberColumn(
-            "Semantic (%)", help=f"{vs} Meaning similarity, 0–100%."),
+            "Semantic (%)", help=f"{vs_orig} Meaning similarity, 0–100%."),
         "Meaning": st.column_config.TextColumn(
-            "Meaning", help=f"Verdict from semantic similarity. {vs}"),
+            "Meaning", help=f"Verdict from semantic similarity. {vs_orig}"),
         "chrF": st.column_config.NumberColumn(
-            "chrF", help=f"{vs} Character n-gram overlap, 0–100."),
+            "chrF", help=f"{vs_orig} Character n-gram overlap, 0–100."),
         "TER": st.column_config.NumberColumn(
-            "TER", help=f"{vs} Edit rate — lower = closer, 0 = identical."),
+            "TER", help=f"{vs_orig} Edit rate — lower = closer, 0 = identical."),
         "COMET": st.column_config.NumberColumn(
             "COMET", help=f"Neural quality score, single triplet: source = "
                           f"“{src_col}”, translation = “{cand_col}”, "
-                          f"reference = {comet_ref}."),
-        "BLEU (GT)": st.column_config.NumberColumn(
-            "BLEU (GT)", help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
+                          f"reference = {ref_name}."),
+        "Wording (GT)": st.column_config.TextColumn(
+            "Wording (GT)",
+            help=f"Human benchmark: wording-overlap judgment of “{gt_col}” vs "
+                 f"“{src_col}” (from its sentence BLEU against the original)."),
         "Semantic GT (%)": st.column_config.NumberColumn(
             "Semantic GT (%)",
             help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
+        "Meaning (GT)": st.column_config.TextColumn(
+            "Meaning (GT)",
+            help=f"Human benchmark: meaning verdict of “{gt_col}” vs "
+                 f"“{src_col}” (from its semantic similarity)."),
         "chrF (GT)": st.column_config.NumberColumn(
             "chrF (GT)", help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
         "TER (GT)": st.column_config.NumberColumn(
@@ -360,16 +393,17 @@ if uploaded:
 
     # ---- download
     buf = io.BytesIO()
+    bleu_target = "ground truth" if gt_col else "original"
     summary_df = pd.DataFrame({
-        "Metric": ["Corpus BLEU (MedLingo vs original)",
+        "Metric": [f"Corpus BLEU (MedLingo vs {bleu_target})",
                    "Sentences scored", "Brevity penalty",
                    "1-gram precision", "2-gram precision", "3-gram precision",
                    "4-gram precision", "Mean sentence BLEU",
                    "Mean semantic similarity (MedLingo vs original)",
-                   "COMET system score",
+                   f"COMET system score (src=original, mt=MedLingo, "
+                   f"ref={bleu_target})",
                    "Corpus chrF (MedLingo vs original)",
                    "Corpus TER (MedLingo vs original)",
-                   "Corpus BLEU (ground truth vs original)",
                    "Mean semantic similarity (ground truth vs original)",
                    "Corpus chrF (ground truth vs original)",
                    "Corpus TER (ground truth vs original)"],
@@ -378,7 +412,6 @@ if uploaded:
                   round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
                   round(s["chrf"], 2), round(s["ter"], 2),
-                  round(s["gt_bleu"], 2) if s["gt_bleu"] is not None else "n/a",
                   round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a",
                   round(s["gt_chrf"], 2) if s["gt_chrf"] is not None else "n/a",
                   round(s["gt_ter"], 2) if s["gt_ter"] is not None else "n/a"],
