@@ -55,8 +55,12 @@ def meaning_verdict(sim):
 
 
 @st.cache_data(show_spinner=False)
-def score_pairs(refs: tuple, cands: tuple, use_comet: bool):
-    refs, cands = list(refs), list(cands)
+def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
+    """srcs = original scripts; cands = MedLingo output; gts = ground-truth
+    human references (empty tuple -> fall back to scoring against srcs)."""
+    srcs, cands = list(srcs), list(cands)
+    has_gt = len(gts) > 0
+    refs = list(gts) if has_gt else srcs  # reference for all ref-based metrics
 
     corpus = sacrebleu.corpus_bleu(cands, [refs])
     corpus_chrf = sacrebleu.corpus_chrf(cands, [refs])
@@ -71,22 +75,28 @@ def score_pairs(refs: tuple, cands: tuple, use_comet: bool):
 
     comet_scores, comet_system = None, None
     if use_comet:
-        data = [{"src": r, "mt": c, "ref": r} for r, c in zip(refs, cands)]
+        # COMET triplet: src = original, mt = MedLingo, ref = ground truth
+        # (or the original itself when no ground truth is provided)
+        data = [{"src": s_, "mt": c, "ref": r}
+                for s_, c, r in zip(srcs, cands, refs)]
         out = comet_model().predict(data, batch_size=8, gpus=0,
                                     num_workers=1, progress_bar=False)
         comet_scores = list(out.scores)
         comet_system = float(out.system_score)
 
     rows = []
-    for i, (r, c) in enumerate(zip(refs, cands)):
+    for i, (s_, c, r) in enumerate(zip(srcs, cands, refs)):
         s = sacrebleu.sentence_bleu(c, [r], smooth_method="exp").score
         sim = float(cosines[i])
-        row = {"#": i + 1, "Original script": r, "MedLingo output": c,
-               "BLEU": round(s, 1), "Wording": interpret(s),
-               "Semantic (%)": round(sim * 100),
-               "Meaning": meaning_verdict(sim),
-               "chrF": round(sacrebleu.sentence_chrf(c, [r]).score, 1),
-               "TER": round(sacrebleu.sentence_ter(c, [r]).score, 1)}
+        row = {"#": i + 1, "Original script": s_}
+        if has_gt:
+            row["Ground truth"] = r
+        row.update({"MedLingo output": c,
+                    "BLEU": round(s, 1), "Wording": interpret(s),
+                    "Semantic (%)": round(sim * 100),
+                    "Meaning": meaning_verdict(sim),
+                    "chrF": round(sacrebleu.sentence_chrf(c, [r]).score, 1),
+                    "TER": round(sacrebleu.sentence_ter(c, [r]).score, 1)})
         if comet_scores is not None:
             row["COMET"] = round(comet_scores[i] * 100)
         rows.append(row)
@@ -101,19 +111,20 @@ def score_pairs(refs: tuple, cands: tuple, use_comet: bool):
 
 
 def autodetect(cols):
-    def find(keywords, exclude=None):
+    def find(keywords, exclude=()):
         for c in cols:
-            if c == exclude:
+            if c in exclude:
                 continue
             if any(k in str(c).lower() for k in keywords):
                 return c
         return None
-    ref = find(["original", "script", "reference", "source", "doctor"])
-    cand = find(["medlingo", "output", "candidate", "translation", "patient"],
-                exclude=ref)
-    if ref is None or cand is None or ref == cand:
-        ref, cand = cols[0], cols[1]
-    return ref, cand
+    src = find(["original", "script", "source", "doctor", "english"])
+    cand = find(["medlingo", "output", "candidate"], exclude=(src,))
+    gt = find(["ground", "truth", "gold", "human", "reference"],
+              exclude=(src, cand))
+    if src is None or cand is None or src == cand:
+        src, cand = cols[0], cols[1]
+    return src, cand, gt
 
 
 # ---------------------------------------------------------------- UI
@@ -147,27 +158,45 @@ if uploaded:
         st.stop()
 
     cols = list(df.columns)
-    ref_default, cand_default = autodetect(cols)
-    c1, c2 = st.columns(2)
-    ref_col = c1.selectbox("Original script (reference) column", cols,
-                           index=cols.index(ref_default))
+    src_default, cand_default, gt_default = autodetect(cols)
+    c1, c2, c3 = st.columns(3)
+    src_col = c1.selectbox("Original script (source) column", cols,
+                           index=cols.index(src_default))
     cand_col = c2.selectbox("MedLingo output column", cols,
                             index=cols.index(cand_default))
-    if ref_col == cand_col:
-        st.error("Reference and MedLingo columns must be different.")
+    NONE = "— none (score against the original) —"
+    gt_opts = [NONE] + cols
+    gt_col = c3.selectbox("Ground truth (human reference) column — optional",
+                          gt_opts,
+                          index=gt_opts.index(gt_default) if gt_default else 0)
+    gt_col = None if gt_col == NONE else gt_col
+    if len({src_col, cand_col, gt_col} - {None}) < (3 if gt_col else 2):
+        st.error("The selected columns must all be different.")
         st.stop()
 
-    sub = df[[ref_col, cand_col]].dropna()
-    refs = sub[ref_col].astype(str).str.strip()
-    cands = sub[cand_col].astype(str).str.strip()
-    mask = (refs != "") & (cands != "")
-    refs, cands = refs[mask].tolist(), cands[mask].tolist()
-    if not refs:
+    use_cols = [src_col, cand_col] + ([gt_col] if gt_col else [])
+    sub = df[use_cols].dropna()
+    series = [sub[c].astype(str).str.strip() for c in use_cols]
+    mask = np.logical_and.reduce([sr != "" for sr in series])
+    srcs = series[0][mask].tolist()
+    cands = series[1][mask].tolist()
+    gts = series[2][mask].tolist() if gt_col else []
+    if not srcs:
         st.error("No usable rows (empty cells were removed).")
         st.stop()
 
-    with st.spinner(f"Scoring {len(refs)} sentences…"):
-        table, s = score_pairs(tuple(refs), tuple(cands), use_comet)
+    if gt_col:
+        st.caption("**3-column mode:** BLEU, chrF, TER and semantic similarity "
+                   "compare MedLingo against the **ground truth**; COMET uses the "
+                   "full triplet (source = original, translation = MedLingo, "
+                   "reference = ground truth) as it was designed to.")
+    else:
+        st.caption("**2-column mode:** no ground truth selected — all scores "
+                   "compare MedLingo against the original script (for COMET, the "
+                   "original serves as both source and reference).")
+
+    with st.spinner(f"Scoring {len(srcs)} sentences…"):
+        table, s = score_pairs(tuple(srcs), tuple(cands), tuple(gts), use_comet)
 
     # ---- headline scores, one row
     labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
@@ -184,7 +213,7 @@ if uploaded:
 
     with st.expander("More statistics"):
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Sentences scored", len(refs))
+        m1.metric("Sentences scored", len(srcs))
         m2.metric("Mean sentence BLEU", f"{s['sent_bleu_mean']:.1f}")
         m3.metric("Brevity penalty", f"{s['bp']:.2f}")
         m4.metric("1–4-gram precision",
@@ -223,7 +252,7 @@ if uploaded:
                    "4-gram precision", "Mean sentence BLEU",
                    "Mean semantic similarity", "COMET system score",
                    "Corpus chrF", "Corpus TER"],
-        "Value": [round(s["bleu"], 2), len(refs), round(s["bp"], 3),
+        "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
                   *[round(p, 1) for p in s["precisions"]],
                   round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
