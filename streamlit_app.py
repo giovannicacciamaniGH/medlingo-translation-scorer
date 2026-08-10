@@ -74,6 +74,7 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
     cosines = np.sum(ref_emb * cand_emb, axis=1).clip(-1, 1)
 
     comet_scores, comet_system = None, None
+    comet_gt_scores, comet_gt_system = None, None
     if use_comet:
         # COMET triplet: src = original, mt = MedLingo, ref = ground truth
         # (or the original itself when no ground truth is provided)
@@ -83,6 +84,15 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                                     num_workers=1, progress_bar=False)
         comet_scores = list(out.scores)
         comet_system = float(out.system_score)
+        if has_gt:
+            # Benchmark: how the human ground truth itself scores as a
+            # rendering of the original (src = ref = original, mt = GT)
+            data_gt = [{"src": s_, "mt": g, "ref": s_}
+                       for s_, g in zip(srcs, gts)]
+            out_gt = comet_model().predict(data_gt, batch_size=8, gpus=0,
+                                           num_workers=1, progress_bar=False)
+            comet_gt_scores = list(out_gt.scores)
+            comet_gt_system = float(out_gt.system_score)
 
     rows = []
     for i, (s_, c, r) in enumerate(zip(srcs, cands, refs)):
@@ -99,6 +109,8 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                     "TER": round(sacrebleu.sentence_ter(c, [r]).score, 1)})
         if comet_scores is not None:
             row["COMET"] = round(comet_scores[i] * 100)
+        if comet_gt_scores is not None:
+            row["COMET (ground truth)"] = round(comet_gt_scores[i] * 100)
         rows.append(row)
 
     summary = {"bleu": corpus.score, "bleu_label": interpret(corpus.score),
@@ -106,7 +118,7 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                "chrf": corpus_chrf.score, "ter": corpus_ter.score,
                "sem_mean": float(np.mean(cosines)),
                "sent_bleu_mean": float(np.mean([r["BLEU"] for r in rows])),
-               "comet": comet_system}
+               "comet": comet_system, "comet_gt": comet_gt_system}
     return pd.DataFrame(rows), summary
 
 
@@ -215,10 +227,19 @@ if uploaded:
              f"{vs} Character n-gram overlap.",
              f"{vs} Edits needed to match the reference — lower is closer."]
     if s["comet"] is not None:
-        labels.insert(2, "COMET (system, 0–100)")
+        labels.insert(2, "COMET — MedLingo")
         values.insert(2, f"{s['comet'] * 100:.0f}")
         helps.insert(2, f"Uses the full triplet: source = “{src_col}”, "
-                        f"translation = “{cand_col}”, reference = {ref_name}.")
+                        f"translation = “{cand_col}”, reference = {ref_name}. "
+                        "0–100, higher = better quality.")
+    if s["comet_gt"] is not None:
+        labels.insert(3, "COMET — ground truth")
+        values.insert(3, f"{s['comet_gt'] * 100:.0f}")
+        helps.insert(3, f"Human benchmark: how “{gt_col}” itself scores as a "
+                        f"rendering of “{src_col}” (source = reference = "
+                        f"“{src_col}”, translation = “{gt_col}”). Compare with "
+                        "COMET — MedLingo to see how close MedLingo gets to "
+                        "the human reference.")
     for col, lab, val, hlp in zip(st.columns(len(labels)), labels, values, helps):
         col.metric(lab, val, help=hlp)
 
@@ -274,7 +295,8 @@ if uploaded:
         lambda v: MEANING_COLORS.get(v, "") + chip, subset=["Meaning"]
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF": "{:.1f}",
                                 "TER": "{:.1f}", "Semantic (%)": "{:.0f}",
-                                "COMET": "{:.0f}"}.items()
+                                "COMET": "{:.0f}",
+                                "COMET (ground truth)": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
     col_help = {
         "BLEU": st.column_config.NumberColumn(
@@ -290,8 +312,14 @@ if uploaded:
         "TER": st.column_config.NumberColumn(
             "TER", help=f"{vs} Edit rate — lower = closer, 0 = identical."),
         "COMET": st.column_config.NumberColumn(
-            "COMET", help=f"Neural quality score. Source = “{src_col}”, "
-                          f"translation = “{cand_col}”, reference = {ref_name}."),
+            "COMET", help=f"Neural quality score for MedLingo. Source = "
+                          f"“{src_col}”, translation = “{cand_col}”, "
+                          f"reference = {ref_name}."),
+        "COMET (ground truth)": st.column_config.NumberColumn(
+            "COMET (ground truth)",
+            help=f"Human benchmark: “{gt_col}” scored as a rendering of "
+                 f"“{src_col}”. Compare with the COMET column to see how "
+                 "close MedLingo gets to the human reference."),
     }
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
@@ -302,12 +330,14 @@ if uploaded:
         "Metric": ["Corpus BLEU", "Sentences scored", "Brevity penalty",
                    "1-gram precision", "2-gram precision", "3-gram precision",
                    "4-gram precision", "Mean sentence BLEU",
-                   "Mean semantic similarity", "COMET system score",
+                   "Mean semantic similarity", "COMET system score (MedLingo)",
+                   "COMET system score (ground truth benchmark)",
                    "Corpus chrF", "Corpus TER"],
         "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
                   *[round(p, 1) for p in s["precisions"]],
                   round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
+                  round(s["comet_gt"], 3) if s["comet_gt"] is not None else "n/a",
                   round(s["chrf"], 2), round(s["ter"], 2)],
     })
     with pd.ExcelWriter(buf) as xl:
@@ -331,11 +361,12 @@ if uploaded:
 st.divider()
 st.subheader("Score legend & references")
 st.markdown("""
-| Score | Range | What it measures | Code | Publication |
-|---|---|---|---|---|
-| **BLEU** | 0–100, higher = more similar wording | Overlap of word sequences (1–4-gram precision) with the original, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
-| **chrF** | 0–100, higher = more similar wording | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
-| **TER** | 0–100+, **lower** = closer (0 = identical) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the MedLingo output back into the original. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
-| **Semantic similarity** | 0–100%, higher = same meaning | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
-| **COMET** | 0–100, higher = better quality | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
+| Score | Range | Columns compared | What it measures | Code | Publication |
+|---|---|---|---|---|---|
+| **BLEU** | 0–100, higher = more similar wording | MedLingo output **vs** ground truth (or the original script if no ground truth is selected) | Overlap of word sequences (1–4-gram precision) with the reference, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
+| **chrF** | 0–100, higher = more similar wording | MedLingo output **vs** ground truth (or original) | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
+| **TER** | 0–100+, **lower** = closer (0 = identical) | MedLingo output **vs** ground truth (or original) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the MedLingo output into the reference. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
+| **Semantic similarity** | 0–100%, higher = same meaning | MedLingo output **vs** ground truth (or original) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
+| **COMET — MedLingo** | 0–100, higher = better quality | Full triplet: source = original script, translation = MedLingo output, reference = ground truth (or original) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
+| **COMET — ground truth** (3-column mode only) | 0–100, higher = better quality | Source = reference = original script, translation = ground truth | Human benchmark: how the ground-truth reference itself scores as a rendering of the original. Compare with COMET — MedLingo to see how close MedLingo gets to human quality. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | same as above |
 """)
