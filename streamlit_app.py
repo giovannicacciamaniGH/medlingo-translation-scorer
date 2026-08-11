@@ -353,37 +353,92 @@ if uploaded:
               if k in view.columns}, na_rep="")
     bleu_vs = f"Compares “{cand_col}” vs {ref_name}."
     col_help = {
+        "#": st.column_config.NumberColumn(
+            "#", help="Row number (order of the sentences in your file, after "
+                      "removing rows with empty cells)."),
+        "Original script": st.column_config.TextColumn(
+            "Original script",
+            help=f"Your column “{src_col}”: the original text, used as the "
+                 "source for COMET and as the reference for the vs-original "
+                 "metrics (semantic similarity, chrF)."),
+        "Ground truth": st.column_config.TextColumn(
+            "Ground truth",
+            help=f"Your column “{gt_col}”: the human reference translation. "
+                 "Serves as the reference for BLEU, TER and COMET, and is "
+                 "itself benchmarked against the original in the GT columns."),
+        "LLM output": st.column_config.TextColumn(
+            "LLM output",
+            help=f"Your column “{cand_col}”: the LLM-generated translation "
+                 "being evaluated. All non-GT scores in this table rate this "
+                 "text."),
         "BLEU": st.column_config.NumberColumn(
-            "BLEU", help=f"Single score. {bleu_vs} Word-sequence overlap, "
-                         "0–100."),
+            "BLEU",
+            help=f"WHAT: word-sequence overlap, 0–100 (higher = more similar "
+                 f"wording). {bleu_vs} HOW: sacrebleu sentence BLEU — "
+                 "geometric mean of 1–4-gram precisions × brevity penalty, "
+                 "13a tokenizer, exponential smoothing (Papineni 2002)."),
         "Wording": st.column_config.TextColumn(
-            "Wording", help=f"Judgment of the BLEU score. {bleu_vs}"),
+            "Wording",
+            help=f"WHAT: plain-English judgment of the BLEU score. {bleu_vs} "
+                 "HOW: banded from BLEU — <10 almost no overlap, 10–20 low, "
+                 "20–30 gist/reworded, 30–40 moderate, 40–50 high, 50–60 very "
+                 "high, ≥60 near-identical."),
         "Semantic (%)": st.column_config.NumberColumn(
-            "Semantic (%)", help=f"{vs_orig} Meaning similarity, 0–100%."),
+            "Semantic (%)",
+            help=f"WHAT: meaning similarity, 0–100% (higher = same meaning, "
+                 f"regardless of wording). {vs_orig} HOW: cosine similarity "
+                 "between sentence embeddings from "
+                 "paraphrase-multilingual-MiniLM-L12-v2 (Sentence-BERT, "
+                 "Reimers & Gurevych 2019; method of TextSim_MTQE)."),
         "Meaning": st.column_config.TextColumn(
-            "Meaning", help=f"Verdict from semantic similarity. {vs_orig}"),
+            "Meaning",
+            help=f"WHAT: verdict on whether the meaning was preserved. "
+                 f"{vs_orig} HOW: banded from semantic similarity — ≥75% "
+                 "meaning preserved, 55–75% mostly preserved (review), "
+                 "<55% possible meaning change."),
         "chrF": st.column_config.NumberColumn(
-            "chrF", help=f"{vs_orig} Character n-gram overlap, 0–100."),
+            "chrF",
+            help=f"WHAT: character-level overlap, 0–100 (higher = more "
+                 f"similar; forgiving of small word changes). {vs_orig} HOW: "
+                 "sacrebleu chrF2 — F-score over character 1–6-grams with "
+                 "β=2 (recall weighted double; Popović 2015)."),
         "TER": st.column_config.NumberColumn(
-            "TER", help=f"Single score. {bleu_vs} Edit rate — lower = closer, "
-                        "0 = identical."),
+            "TER",
+            help=f"WHAT: Translation Edit Rate, 0–100+ (LOWER = closer, 0 = "
+                 f"identical). {bleu_vs} HOW: sacrebleu TER — minimum "
+                 "word-level edits (insert/delete/substitute/shift) to turn "
+                 "the LLM output into the reference, divided by reference "
+                 "length; tercom tokenization, case-insensitive (Snover 2006)."),
         "COMET": st.column_config.NumberColumn(
-            "COMET", help=f"Neural quality score, single triplet: source = "
-                          f"“{src_col}”, translation = “{cand_col}”, "
-                          f"reference = {ref_name}."),
+            "COMET",
+            help=f"WHAT: neural translation-quality estimate, 0–100 (higher "
+                 f"= better), trained on human judgments. HOW: "
+                 "Unbabel/wmt22-comet-da model scoring the triplet source = "
+                 f"“{src_col}”, translation = “{cand_col}”, reference = "
+                 f"{ref_name} (Rei et al. 2020/2022)."),
         "Wording (GT)": st.column_config.TextColumn(
             "Wording (GT)",
-            help=f"Human benchmark: wording-overlap judgment of “{gt_col}” vs "
-                 f"“{src_col}” (from its sentence BLEU against the original)."),
+            help=f"WHAT: human benchmark — wording judgment for “{gt_col}” vs "
+                 f"“{src_col}”. HOW: same BLEU bands as the Wording column, "
+                 "applied to the ground truth's sentence BLEU against the "
+                 "original."),
         "Semantic GT (%)": st.column_config.NumberColumn(
             "Semantic GT (%)",
-            help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
+            help=f"WHAT: human benchmark — meaning similarity of “{gt_col}” "
+                 f"vs “{src_col}”, 0–100%. HOW: same embedding cosine as the "
+                 "Semantic column. Compare with Semantic (%) to see whether "
+                 "the LLM preserves meaning as well as the human."),
         "Meaning (GT)": st.column_config.TextColumn(
             "Meaning (GT)",
-            help=f"Human benchmark: meaning verdict of “{gt_col}” vs "
-                 f"“{src_col}” (from its semantic similarity)."),
+            help=f"WHAT: human benchmark — meaning verdict for “{gt_col}” vs "
+                 f"“{src_col}”. HOW: same ≥75% / 55–75% / <55% bands as the "
+                 "Meaning column, applied to Semantic GT (%)."),
         "chrF (GT)": st.column_config.NumberColumn(
-            "chrF (GT)", help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
+            "chrF (GT)",
+            help=f"WHAT: human benchmark — character-level overlap of "
+                 f"“{gt_col}” vs “{src_col}”, 0–100. HOW: same sacrebleu "
+                 "chrF2 as the chrF column. Compare with chrF to see who "
+                 "rewrites more."),
     }
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
