@@ -3,7 +3,7 @@ LLM Translation Scorer — Streamlit app.
 
 Upload a spreadsheet with the original script and the LLM output;
 get corpus-level and per-sentence translation scores:
-BLEU, chrF, TER (sacrebleu), semantic similarity (sentence embeddings,
+BLEU, chrF++, TER (sacrebleu), semantic similarity (sentence embeddings,
 per TextSim_MTQE) and COMET (Unbabel wmt22-comet-da).
 
 Run locally:  streamlit run streamlit_app.py
@@ -59,20 +59,21 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
     """srcs = original scripts; cands = LLM output; gts = ground-truth
     human translations (optional).
 
-    BLEU, COMET and TER are single scores comparing LLM against the ground
-    truth (or the original when no ground truth is given). chrF and
-    semantic similarity are computed against the ORIGINAL — for LLM,
-    and (when provided) also for the ground truth, so machine and human can
-    be compared on the same basis."""
+    BLEU, chrF++ and TER are single reference-based scores comparing the
+    LLM output against the ground truth (or the original when no ground
+    truth is given); COMET is a single score using its triplet (source =
+    original, translation = LLM, reference = ground truth). Semantic
+    similarity uses multilingual embeddings and is computed against the
+    original for both LLM and ground truth (meaning-preservation check,
+    valid cross-lingually)."""
     srcs, cands, gts = list(srcs), list(cands), list(gts)
     has_gt = len(gts) > 0
     bleu_refs = gts if has_gt else srcs
 
     corpus = sacrebleu.corpus_bleu(cands, [bleu_refs])
-    corpus_chrf = sacrebleu.corpus_chrf(cands, [srcs])
+    # chrF++ (Popović 2017): character 6-grams + word 1/2-grams, beta=2
+    corpus_chrf = sacrebleu.corpus_chrf(cands, [bleu_refs], word_order=2)
     corpus_ter = sacrebleu.corpus_ter(cands, [bleu_refs])
-    if has_gt:
-        gt_chrf = sacrebleu.corpus_chrf(gts, [srcs])
 
     model = embedder()
 
@@ -107,17 +108,13 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                     "BLEU": round(s, 1), "Wording": interpret(s),
                     "Semantic (%)": round(sim * 100),
                     "Meaning": meaning_verdict(sim),
-                    "chrF": round(sacrebleu.sentence_chrf(c, [s_]).score, 1),
+                    "chrF++": round(sacrebleu.sentence_chrf(
+                        c, [bleu_refs[i]], word_order=2).score, 1),
                     "TER": round(
                         sacrebleu.sentence_ter(c, [bleu_refs[i]]).score, 1)})
         if has_gt:
-            g = gts[i]
-            gt_sent_bleu = sacrebleu.sentence_bleu(
-                g, [s_], smooth_method="exp").score
-            row["Wording (GT)"] = interpret(gt_sent_bleu)
             row["Semantic GT (%)"] = round(float(gt_cosines[i]) * 100)
             row["Meaning (GT)"] = meaning_verdict(float(gt_cosines[i]))
-            row["chrF (GT)"] = round(sacrebleu.sentence_chrf(g, [s_]).score, 1)
         if comet_scores is not None:
             row["COMET"] = round(comet_scores[i] * 100)
         rows.append(row)
@@ -128,7 +125,6 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                "sem_mean": float(np.mean(cosines)),
                "sent_bleu_mean": float(np.mean([r["BLEU"] for r in rows])),
                "comet": comet_system,
-               "gt_chrf": gt_chrf.score if has_gt else None,
                "gt_sem_mean": float(np.mean(gt_cosines)) if has_gt else None}
     return pd.DataFrame(rows), summary
 
@@ -163,7 +159,7 @@ def autodetect(cols):
 st.title("🩺 LLM Translation Scorer")
 st.caption("Upload a spreadsheet with the original script, the LLM output, "
            "and — optionally — a ground-truth human reference. You get overall "
-           "translation scores (BLEU, chrF, TER, semantic similarity, COMET) and "
+           "translation scores (BLEU, chrF++, TER, semantic similarity, COMET) and "
            "a score for every sentence. With a ground truth, LLM is scored "
            "against the human reference; without one, it is scored against the "
            "original script.")
@@ -222,13 +218,14 @@ if uploaded:
         st.stop()
 
     if gt_col:
-        st.caption("**3-column mode:** BLEU and TER compare LLM against the "
-                   "**ground truth**, and COMET uses its full triplet (source = "
-                   "original, translation = LLM, reference = ground truth) "
-                   "— one score each. chrF and semantic similarity are "
-                   "computed **against the original** for both translations — "
-                   "LLM vs original and ground truth vs original — so "
-                   "machine and human can be compared on the same basis.")
+        st.caption("**3-column mode:** BLEU, chrF++ and TER compare the LLM "
+                   "output against the **ground truth** (reference-based, as "
+                   "these metrics were designed), and COMET uses its full "
+                   "triplet (source = original, translation = LLM, reference = "
+                   "ground truth) — one score each. Semantic similarity uses "
+                   "**multilingual** embeddings and is computed against the "
+                   "original for both LLM and ground truth, as a "
+                   "meaning-preservation check that works across languages.")
     else:
         st.caption("**2-column mode:** no ground truth selected — all scores "
                    "compare LLM against the original script (for COMET, the "
@@ -242,46 +239,47 @@ if uploaded:
     vs_orig = f"Compares “{cand_col}” vs “{src_col}” (original)."
 
     if gt_col:
-        # Group 1 — single scores (computed once, against the ground truth)
+        # Group 1 — single reference-based scores (LLM vs ground truth)
         st.markdown(f"#### 1️⃣ Single scores — “{cand_col}” vs “{gt_col}”")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Overall BLEU (corpus)", f"{s['bleu']:.1f}",
                   help=f"{s['bleu_label']}. Computed once: “{cand_col}” vs "
                        f"“{gt_col}” (ground truth). Word-sequence overlap.")
-        if s["comet"] is not None:
-            c2.metric("COMET", f"{s['comet'] * 100:.0f}",
-                      help=f"Computed once, full triplet: source = “{src_col}”, "
-                           f"translation = “{cand_col}”, reference = “{gt_col}”. "
-                           "0–100, higher = better quality.")
+        c2.metric("chrF++ (corpus)", f"{s['chrf']:.1f}",
+                  help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
+                       "truth). Character 6-gram + word 1/2-gram F-score "
+                       "(chrF++, Popović 2017).")
         c3.metric("TER (corpus, lower = closer)", f"{s['ter']:.1f}",
                   help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
                        "truth). Edits needed to match the ground truth — "
                        "lower is closer, 0 = identical.")
+        if s["comet"] is not None:
+            c4.metric("COMET", f"{s['comet'] * 100:.0f}",
+                      help=f"Computed once, full triplet: source = “{src_col}”, "
+                           f"translation = “{cand_col}”, reference = “{gt_col}”. "
+                           "0–100, higher = better quality.")
 
-        # Groups 2 & 3 — same metrics, two comparisons, aligned columns
-        st.markdown(f"#### 2️⃣ LLM vs original — “{cand_col}” vs “{src_col}”")
-        m1, m2, _ = st.columns(3)
-        m1.metric("Mean semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
-                  help=f"{vs_orig} Meaning similarity from sentence embeddings.")
-        m2.metric("chrF (corpus)", f"{s['chrf']:.1f}",
-                  help=f"{vs_orig} Character n-gram overlap.")
-
-        gvs = f"Compares “{gt_col}” vs “{src_col}” (original)."
-        st.markdown(f"#### 3️⃣ Ground truth vs original — “{gt_col}” vs "
-                    f"“{src_col}” (human benchmark)")
-        g1, g2, _ = st.columns(3)
-        g1.metric("Mean semantic similarity", f"{s['gt_sem_mean'] * 100:.0f}%",
-                  help=f"{gvs} Meaning similarity from sentence embeddings.")
-        g2.metric("chrF (corpus)", f"{s['gt_chrf']:.1f}",
-                  help=f"{gvs} Character n-gram overlap.")
+        # Groups 2 & 3 — semantic meaning-preservation vs the original
+        # (multilingual embeddings, valid across languages)
+        st.markdown(f"#### 2️⃣ Meaning kept vs original — LLM and human")
+        m1, m2, _, _ = st.columns(4)
+        m1.metric("LLM semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
+                  help=f"{vs_orig} Meaning similarity from multilingual "
+                       "sentence embeddings — how much of the original's "
+                       "meaning the LLM output preserves.")
+        m2.metric("Ground-truth semantic similarity",
+                  f"{s['gt_sem_mean'] * 100:.0f}%",
+                  help=f"Compares “{gt_col}” vs “{src_col}” (original). Human "
+                       "benchmark for meaning preservation — compare with the "
+                       "LLM value on the left.")
     else:
         labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
-                  "chrF (corpus)", "TER (corpus, lower = closer)"]
+                  "chrF++ (corpus)", "TER (corpus, lower = closer)"]
         values = [f"{s['bleu']:.1f}", f"{s['sem_mean'] * 100:.0f}%",
                   f"{s['chrf']:.1f}", f"{s['ter']:.1f}"]
         helps = [f"{s['bleu_label']}. {vs_orig} Word-sequence overlap.",
                  f"{vs_orig} Meaning similarity from sentence embeddings.",
-                 f"{vs_orig} Character n-gram overlap.",
+                 f"{vs_orig} Character + word n-gram overlap (chrF++).",
                  f"{vs_orig} Edits needed to match the original."]
         if s["comet"] is not None:
             labels.insert(2, "COMET")
@@ -339,15 +337,14 @@ if uploaded:
         "Meaning preserved":         "background-color:#dafbe1; color:#1a7f37",
     }
     chip = "; border-radius:999px; text-align:center; font-weight:600"
-    wording_cols = [c for c in ("Wording", "Wording (GT)") if c in view.columns]
+    wording_cols = [c for c in ("Wording",) if c in view.columns]
     meaning_cols = [c for c in ("Meaning", "Meaning (GT)") if c in view.columns]
     styled = view.style.map(
         lambda v: WORDING_COLORS.get(v, "") + chip, subset=wording_cols
     ).map(
         lambda v: MEANING_COLORS.get(v, "") + chip, subset=meaning_cols
-    ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF": "{:.1f}",
+    ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF++": "{:.1f}",
                                 "TER": "{:.1f}", "Semantic (%)": "{:.0f}",
-                                "chrF (GT)": "{:.1f}",
                                 "Semantic GT (%)": "{:.0f}",
                                 "COMET": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
@@ -359,13 +356,12 @@ if uploaded:
         "Original script": st.column_config.TextColumn(
             "Original script",
             help=f"Your column “{src_col}”: the original text, used as the "
-                 "source for COMET and as the reference for the vs-original "
-                 "metrics (semantic similarity, chrF)."),
+                 "source for COMET and as the reference for the semantic "
+                 "meaning-preservation check."),
         "Ground truth": st.column_config.TextColumn(
             "Ground truth",
             help=f"Your column “{gt_col}”: the human reference translation. "
-                 "Serves as the reference for BLEU, TER and COMET, and is "
-                 "itself benchmarked against the original in the GT columns."),
+                 "Serves as the reference for BLEU, chrF++, TER and COMET."),
         "LLM output": st.column_config.TextColumn(
             "LLM output",
             help=f"Your column “{cand_col}”: the LLM-generated translation "
@@ -396,12 +392,13 @@ if uploaded:
                  f"{vs_orig} HOW: banded from semantic similarity — ≥75% "
                  "meaning preserved, 55–75% mostly preserved (review), "
                  "<55% possible meaning change."),
-        "chrF": st.column_config.NumberColumn(
-            "chrF",
-            help=f"WHAT: character-level overlap, 0–100 (higher = more "
-                 f"similar; forgiving of small word changes). {vs_orig} HOW: "
-                 "sacrebleu chrF2 — F-score over character 1–6-grams with "
-                 "β=2 (recall weighted double; Popović 2015)."),
+        "chrF++": st.column_config.NumberColumn(
+            "chrF++",
+            help=f"WHAT: character + word n-gram overlap, 0–100 (higher = "
+                 f"more similar; forgiving of small word changes). {bleu_vs} "
+                 "HOW: sacrebleu chrF++ — F-score over character 1–6-grams "
+                 "and word 1–2-grams with β=2 (recall weighted double; "
+                 "Popović 2017)."),
         "TER": st.column_config.NumberColumn(
             "TER",
             help=f"WHAT: Translation Edit Rate, 0–100+ (LOWER = closer, 0 = "
@@ -416,12 +413,6 @@ if uploaded:
                  "Unbabel/wmt22-comet-da model scoring the triplet source = "
                  f"“{src_col}”, translation = “{cand_col}”, reference = "
                  f"{ref_name} (Rei et al. 2020/2022)."),
-        "Wording (GT)": st.column_config.TextColumn(
-            "Wording (GT)",
-            help=f"WHAT: human benchmark — wording judgment for “{gt_col}” vs "
-                 f"“{src_col}”. HOW: same BLEU bands as the Wording column, "
-                 "applied to the ground truth's sentence BLEU against the "
-                 "original."),
         "Semantic GT (%)": st.column_config.NumberColumn(
             "Semantic GT (%)",
             help=f"WHAT: human benchmark — meaning similarity of “{gt_col}” "
@@ -433,12 +424,6 @@ if uploaded:
             help=f"WHAT: human benchmark — meaning verdict for “{gt_col}” vs "
                  f"“{src_col}”. HOW: same ≥75% / 55–75% / <55% bands as the "
                  "Meaning column, applied to Semantic GT (%)."),
-        "chrF (GT)": st.column_config.NumberColumn(
-            "chrF (GT)",
-            help=f"WHAT: human benchmark — character-level overlap of "
-                 f"“{gt_col}” vs “{src_col}”, 0–100. HOW: same sacrebleu "
-                 "chrF2 as the chrF column. Compare with chrF to see who "
-                 "rewrites more."),
     }
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
@@ -455,16 +440,14 @@ if uploaded:
                    f"COMET system score (src=original, mt=LLM, "
                    f"ref={bleu_target})",
                    f"Corpus TER (LLM vs {bleu_target})",
-                   "Corpus chrF (LLM vs original)",
-                   "Mean semantic similarity (ground truth vs original)",
-                   "Corpus chrF (ground truth vs original)"],
+                   f"Corpus chrF++ (LLM vs {bleu_target})",
+                   "Mean semantic similarity (ground truth vs original)"],
         "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
                   *[round(p, 1) for p in s["precisions"]],
                   round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
                   round(s["ter"], 2), round(s["chrf"], 2),
-                  round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a",
-                  round(s["gt_chrf"], 2) if s["gt_chrf"] is not None else "n/a"],
+                  round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a"],
     })
     with pd.ExcelWriter(buf) as xl:
         table.to_excel(xl, sheet_name="Per-sentence scores", index=False)
@@ -474,14 +457,14 @@ if uploaded:
                        mime="application/vnd.openxmlformats-officedocument"
                             ".spreadsheetml.sheet")
 
-    st.info("**Reading the scores:** BLEU, chrF and TER measure *surface* overlap — "
-            "they penalize reworded text even when the rewording is a perfect "
-            "simplification (TER: lower = closer, 0 = identical). Semantic "
-            "similarity and COMET look past wording toward *meaning*: "
-            "“myocardial infarction” → “heart attack” scores low on BLEU but high "
-            "on both. The sweet spot for LLM: **high semantic/COMET + "
-            "low/moderate BLEU** = meaning preserved, wording simplified. Rows "
-            "flagged *Possible meaning change* deserve a manual read.")
+    st.info("**Reading the scores:** BLEU, chrF++ and TER measure *surface* "
+            "overlap with the reference — they reward wording close to the "
+            "ground truth (TER: lower = closer, 0 = identical). Semantic "
+            "similarity and COMET look past wording toward *meaning*. A "
+            "translation can phrase things differently from the ground truth "
+            "(lower BLEU/chrF++) and still be excellent — check COMET and the "
+            "semantic scores in that case. Rows flagged *Possible meaning "
+            "change* deserve a manual read.")
 
 # ---- legend & references (always visible)
 st.divider()
@@ -490,16 +473,17 @@ st.markdown("""
 | Score | Range | Columns compared | What it measures | Code | Publication |
 |---|---|---|---|---|---|
 | **BLEU** | 0–100, higher = more similar wording | Single score: LLM output **vs** ground truth (or the original script if no ground truth is selected) | Overlap of word sequences (1–4-gram precision) with the reference, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
-| **chrF** | 0–100, higher = more similar wording | LLM output **vs** original; also ground truth **vs** original (benchmark) | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
+| **chrF++** | 0–100, higher = more similar wording | Single score: LLM output **vs** ground truth (or the original if no ground truth is selected) | F-score over character 1–6-grams **and** word 1–2-grams (β=2); more forgiving of small word changes and morphology than BLEU. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu, `word_order=2`) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT; chrF++: [Popović (2017)](https://aclanthology.org/W17-4770/), WMT |
 | **TER** | 0–100+, **lower** = closer (0 = identical) | Single score: LLM output **vs** ground truth (or the original if no ground truth is selected) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the LLM output into the reference. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
-| **Semantic similarity** | 0–100%, higher = same meaning | LLM output **vs** original; also ground truth **vs** original (benchmark) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
+| **Semantic similarity** | 0–100%, higher = same meaning | LLM output **vs** original; also ground truth **vs** original (benchmark). Multilingual embeddings, so the comparison is valid across languages | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording or language. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
 | **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = LLM output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
 """)
 st.caption(
     "**Implementation signatures** (for exact reproducibility): "
     "BLEU `nrefs:1|case:mixed|eff:no|tok:13a|smooth:exp` · "
-    "chrF `nrefs:1|case:mixed|eff:yes|nc:6|nw:0` (chrF2, β=2, character-only, "
-    "verified against Popović's reference script `chrF++.py -nw 0 -b 2`) · "
+    "chrF++ `nrefs:1|case:mixed|eff:yes|nc:6|nw:2` (β=2, character 6-grams + "
+    "word 2-grams, matching the defaults of Popović's reference script "
+    "`chrF++.py`) · "
     "TER `nrefs:1|case:lc|tok:tercom|norm:no|punct:yes` · "
     "semantic similarity: `sentence-transformers` "
     "paraphrase-multilingual-MiniLM-L12-v2, cosine similarity · "
