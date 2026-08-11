@@ -59,8 +59,8 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
     """srcs = original scripts; cands = LLM output; gts = ground-truth
     human translations (optional).
 
-    BLEU and COMET are single scores comparing LLM against the ground
-    truth (or the original when no ground truth is given). chrF, TER and
+    BLEU, COMET and TER are single scores comparing LLM against the ground
+    truth (or the original when no ground truth is given). chrF and
     semantic similarity are computed against the ORIGINAL — for LLM,
     and (when provided) also for the ground truth, so machine and human can
     be compared on the same basis."""
@@ -70,10 +70,9 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
 
     corpus = sacrebleu.corpus_bleu(cands, [bleu_refs])
     corpus_chrf = sacrebleu.corpus_chrf(cands, [srcs])
-    corpus_ter = sacrebleu.corpus_ter(cands, [srcs])
+    corpus_ter = sacrebleu.corpus_ter(cands, [bleu_refs])
     if has_gt:
         gt_chrf = sacrebleu.corpus_chrf(gts, [srcs])
-        gt_ter = sacrebleu.corpus_ter(gts, [srcs])
 
     model = embedder()
 
@@ -109,7 +108,8 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                     "Semantic (%)": round(sim * 100),
                     "Meaning": meaning_verdict(sim),
                     "chrF": round(sacrebleu.sentence_chrf(c, [s_]).score, 1),
-                    "TER": round(sacrebleu.sentence_ter(c, [s_]).score, 1)})
+                    "TER": round(
+                        sacrebleu.sentence_ter(c, [bleu_refs[i]]).score, 1)})
         if has_gt:
             g = gts[i]
             gt_sent_bleu = sacrebleu.sentence_bleu(
@@ -118,7 +118,6 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
             row["Semantic GT (%)"] = round(float(gt_cosines[i]) * 100)
             row["Meaning (GT)"] = meaning_verdict(float(gt_cosines[i]))
             row["chrF (GT)"] = round(sacrebleu.sentence_chrf(g, [s_]).score, 1)
-            row["TER (GT)"] = round(sacrebleu.sentence_ter(g, [s_]).score, 1)
         if comet_scores is not None:
             row["COMET"] = round(comet_scores[i] * 100)
         rows.append(row)
@@ -130,7 +129,6 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                "sent_bleu_mean": float(np.mean([r["BLEU"] for r in rows])),
                "comet": comet_system,
                "gt_chrf": gt_chrf.score if has_gt else None,
-               "gt_ter": gt_ter.score if has_gt else None,
                "gt_sem_mean": float(np.mean(gt_cosines)) if has_gt else None}
     return pd.DataFrame(rows), summary
 
@@ -224,10 +222,10 @@ if uploaded:
         st.stop()
 
     if gt_col:
-        st.caption("**3-column mode:** BLEU compares LLM against the "
+        st.caption("**3-column mode:** BLEU and TER compare LLM against the "
                    "**ground truth**, and COMET uses its full triplet (source = "
                    "original, translation = LLM, reference = ground truth) "
-                   "— one score each. chrF, TER and semantic similarity are "
+                   "— one score each. chrF and semantic similarity are "
                    "computed **against the original** for both translations — "
                    "LLM vs original and ground truth vs original — so "
                    "machine and human can be compared on the same basis.")
@@ -246,7 +244,7 @@ if uploaded:
     if gt_col:
         # Group 1 — single scores (computed once, against the ground truth)
         st.markdown(f"#### 1️⃣ Single scores — “{cand_col}” vs “{gt_col}”")
-        c1, c2, _ = st.columns(3)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Overall BLEU (corpus)", f"{s['bleu']:.1f}",
                   help=f"{s['bleu_label']}. Computed once: “{cand_col}” vs "
                        f"“{gt_col}” (ground truth). Word-sequence overlap.")
@@ -255,27 +253,27 @@ if uploaded:
                       help=f"Computed once, full triplet: source = “{src_col}”, "
                            f"translation = “{cand_col}”, reference = “{gt_col}”. "
                            "0–100, higher = better quality.")
+        c3.metric("TER (corpus, lower = closer)", f"{s['ter']:.1f}",
+                  help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
+                       "truth). Edits needed to match the ground truth — "
+                       "lower is closer, 0 = identical.")
 
         # Groups 2 & 3 — same metrics, two comparisons, aligned columns
         st.markdown(f"#### 2️⃣ LLM vs original — “{cand_col}” vs “{src_col}”")
-        m1, m2, m3 = st.columns(3)
+        m1, m2, _ = st.columns(3)
         m1.metric("Mean semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
                   help=f"{vs_orig} Meaning similarity from sentence embeddings.")
         m2.metric("chrF (corpus)", f"{s['chrf']:.1f}",
                   help=f"{vs_orig} Character n-gram overlap.")
-        m3.metric("TER (corpus, lower = closer)", f"{s['ter']:.1f}",
-                  help=f"{vs_orig} Edits needed to match the original.")
 
         gvs = f"Compares “{gt_col}” vs “{src_col}” (original)."
         st.markdown(f"#### 3️⃣ Ground truth vs original — “{gt_col}” vs "
                     f"“{src_col}” (human benchmark)")
-        g1, g2, g3 = st.columns(3)
+        g1, g2, _ = st.columns(3)
         g1.metric("Mean semantic similarity", f"{s['gt_sem_mean'] * 100:.0f}%",
                   help=f"{gvs} Meaning similarity from sentence embeddings.")
         g2.metric("chrF (corpus)", f"{s['gt_chrf']:.1f}",
                   help=f"{gvs} Character n-gram overlap.")
-        g3.metric("TER (corpus, lower = closer)", f"{s['gt_ter']:.1f}",
-                  help=f"{gvs} Edits needed to match the original.")
     else:
         labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
                   "chrF (corpus)", "TER (corpus, lower = closer)"]
@@ -349,7 +347,7 @@ if uploaded:
         lambda v: MEANING_COLORS.get(v, "") + chip, subset=meaning_cols
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF": "{:.1f}",
                                 "TER": "{:.1f}", "Semantic (%)": "{:.0f}",
-                                "chrF (GT)": "{:.1f}", "TER (GT)": "{:.1f}",
+                                "chrF (GT)": "{:.1f}",
                                 "Semantic GT (%)": "{:.0f}",
                                 "COMET": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
@@ -367,7 +365,8 @@ if uploaded:
         "chrF": st.column_config.NumberColumn(
             "chrF", help=f"{vs_orig} Character n-gram overlap, 0–100."),
         "TER": st.column_config.NumberColumn(
-            "TER", help=f"{vs_orig} Edit rate — lower = closer, 0 = identical."),
+            "TER", help=f"Single score. {bleu_vs} Edit rate — lower = closer, "
+                        "0 = identical."),
         "COMET": st.column_config.NumberColumn(
             "COMET", help=f"Neural quality score, single triplet: source = "
                           f"“{src_col}”, translation = “{cand_col}”, "
@@ -385,9 +384,6 @@ if uploaded:
                  f"“{src_col}” (from its semantic similarity)."),
         "chrF (GT)": st.column_config.NumberColumn(
             "chrF (GT)", help=f"Human benchmark: “{gt_col}” vs “{src_col}”."),
-        "TER (GT)": st.column_config.NumberColumn(
-            "TER (GT)", help=f"Human benchmark: “{gt_col}” vs “{src_col}”. "
-                             "Lower = closer."),
     }
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
@@ -403,19 +399,17 @@ if uploaded:
                    "Mean semantic similarity (LLM vs original)",
                    f"COMET system score (src=original, mt=LLM, "
                    f"ref={bleu_target})",
+                   f"Corpus TER (LLM vs {bleu_target})",
                    "Corpus chrF (LLM vs original)",
-                   "Corpus TER (LLM vs original)",
                    "Mean semantic similarity (ground truth vs original)",
-                   "Corpus chrF (ground truth vs original)",
-                   "Corpus TER (ground truth vs original)"],
+                   "Corpus chrF (ground truth vs original)"],
         "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
                   *[round(p, 1) for p in s["precisions"]],
                   round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
-                  round(s["chrf"], 2), round(s["ter"], 2),
+                  round(s["ter"], 2), round(s["chrf"], 2),
                   round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a",
-                  round(s["gt_chrf"], 2) if s["gt_chrf"] is not None else "n/a",
-                  round(s["gt_ter"], 2) if s["gt_ter"] is not None else "n/a"],
+                  round(s["gt_chrf"], 2) if s["gt_chrf"] is not None else "n/a"],
     })
     with pd.ExcelWriter(buf) as xl:
         table.to_excel(xl, sheet_name="Per-sentence scores", index=False)
@@ -442,7 +436,7 @@ st.markdown("""
 |---|---|---|---|---|---|
 | **BLEU** | 0–100, higher = more similar wording | Single score: LLM output **vs** ground truth (or the original script if no ground truth is selected) | Overlap of word sequences (1–4-gram precision) with the reference, plus a brevity penalty. Standard MT metric, per the [Microsoft Translator methodology](https://learn.microsoft.com/azure/ai-services/translator/custom-translator/concepts/bleu-score). | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu); methodology: [MicrosoftDocs/azure-ai-docs](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) | [Papineni et al. (2002)](https://aclanthology.org/P02-1040/), ACL; implementation: [Post (2018)](https://aclanthology.org/W18-6319/), WMT |
 | **chrF** | 0–100, higher = more similar wording | LLM output **vs** original; also ground truth **vs** original (benchmark) | Character n-gram F-score — like BLEU but at character level; more forgiving of small word changes and morphology. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT |
-| **TER** | 0–100+, **lower** = closer (0 = identical) | LLM output **vs** original; also ground truth **vs** original (benchmark) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the translation into the original. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
+| **TER** | 0–100+, **lower** = closer (0 = identical) | Single score: LLM output **vs** ground truth (or the original if no ground truth is selected) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the LLM output into the reference. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
 | **Semantic similarity** | 0–100%, higher = same meaning | LLM output **vs** original; also ground truth **vs** original (benchmark) | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP |
 | **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = LLM output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
 """)
