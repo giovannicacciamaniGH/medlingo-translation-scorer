@@ -1,21 +1,35 @@
-# MedLingo Translation Scorer
+# Interpreter Translation Scorer
 
-A web app to evaluate MedLingo's patient-friendly rewrites of medical scripts
-against the original text, using standard machine-translation metrics:
+A web app to evaluate medical interpreters' translations against a certified
+human ground truth, using standard machine-translation metrics. Built for
+bidirectional encounters (e.g. doctor English → Spanish, patient Spanish →
+English) scored from a single spreadsheet.
 
-| Score | Measures | Implementation |
+| Score | Compares | Implementation |
 |---|---|---|
-| **BLEU** | word-sequence overlap (1–4-grams + brevity penalty) | [sacrebleu](https://github.com/mjpost/sacrebleu), per the [Microsoft Translator methodology](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) |
-| **chrF** | character n-gram F-score | [m-popovic/chrF](https://github.com/m-popovic/chrF) via sacrebleu |
-| **TER** | edit rate back to the original (lower = closer) | sacrebleu |
-| **Semantic similarity** | meaning preservation via sentence embeddings | [TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [sentence-transformers](https://github.com/UKPLab/sentence-transformers) |
-| **COMET** | neural quality estimate trained on human judgments | [Unbabel/COMET](https://github.com/Unbabel/COMET) (wmt22-comet-da) |
+| **BLEU** | Interpreter output vs ground truth (single score) | [sacrebleu](https://github.com/mjpost/sacrebleu) (Papineni 2002; Post 2018), per the [Microsoft Translator methodology](https://github.com/MicrosoftDocs/azure-ai-docs/blob/main/articles/ai-services/translator/custom-translator/concepts/bleu-score.md) |
+| **chrF++** | Interpreter output vs ground truth (single score) | [m-popovic/chrF](https://github.com/m-popovic/chrF) via sacrebleu, `word_order=2` (Popović 2015, 2017) |
+| **TER** | Interpreter output vs ground truth (single score, lower = closer) | sacrebleu (Snover 2006) |
+| **BERTScore** | Interpreter output vs ground truth (single score) | [bert_score](https://github.com/Tiiiger/bert_score), bert-base-multilingual-cased F1 (Zhang et al., ICLR 2020) |
+| **COMET** | Full triplet: source = original, translation = interpreter, reference = ground truth | [Unbabel/COMET](https://github.com/Unbabel/COMET), wmt22-comet-da (Rei et al. 2020, 2022) |
+| **Semantic similarity** | Interpreter vs original AND ground truth vs original (cross-lingual meaning-preservation check) | [sentence-transformers](https://github.com/UKPLab/sentence-transformers) multilingual embeddings, cosine (Reimers & Gurevych 2019, 2020; validated per Cer et al. 2017); method per [TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) |
 
-Upload an Excel/CSV with one column of original scripts and one of MedLingo
-output; get corpus-level scores, per-sentence scores with meaning verdicts
-("Meaning preserved" / "Mostly preserved — review" / "Possible meaning change"),
-filters, and a downloadable results spreadsheet. Full references for each
-metric are shown in the app's legend.
+## Input format
+
+One Excel/CSV, one utterance per row:
+
+- **Original script** — what was actually said, in the speaker's language
+- **Interpreter output** — the interpreter's rendition (verified transcript)
+- **Ground truth** — the certified reference translation of that turn
+- **Direction** (optional) — e.g. `Doctor (En→Es)` / `Patient (Es→En)`;
+  when present, results are shown per direction (tabs) plus overall
+- Extra columns (encounter ID, turn number, …) are ignored
+
+Columns are auto-detected and can be overridden in the UI. Rows with empty
+cells are dropped. Every score carries an info tooltip stating what it
+measures and how it is computed, and the in-app legend lists all references
+and exact implementation signatures. All computations are verified
+numerically against the reference implementations above.
 
 ## Run locally
 
@@ -24,23 +38,15 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-The first run downloads the scoring models (the COMET model is ~2.3 GB).
-COMET can be toggled off in the app for faster scoring.
+First run downloads the models (COMET ~2.3 GB, BERTScore ~700 MB,
+embeddings ~500 MB). COMET can be toggled off for faster scoring.
 
 ## Deploy
 
-Works on [Streamlit Community Cloud](https://share.streamlit.io) (toggle COMET
-off — the model exceeds the free tier's memory) or Hugging Face Spaces
-(free CPU tier fits full COMET).
-
-## Interpreting the scores
-
-BLEU, chrF and TER measure *surface* wording overlap, so a good
-simplification ("myocardial infarction" → "heart attack") scores low on them
-by design. Semantic similarity and COMET measure *meaning*. The desired
-pattern for patient-friendly rewriting is **high semantic/COMET with
-low-to-moderate BLEU**: meaning preserved, wording simplified. Sentences
-flagged "Possible meaning change" warrant manual review.
+- **Hugging Face Spaces** (recommended): free CPU tier fits the full COMET
+  model. Create a Space with the Streamlit SDK and push this repo.
+- **Streamlit Community Cloud**: works with the COMET toggle **off**
+  (the model exceeds the free tier's memory).
 
 ## Note on data
 
