@@ -6,3 +6,4 @@ sacrebleu
 sentence-transformers
 unbabel-comet
 scikit-learn
+bert-score
