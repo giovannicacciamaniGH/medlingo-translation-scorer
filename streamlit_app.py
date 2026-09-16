@@ -94,9 +94,13 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
         return e / np.linalg.norm(e, axis=1, keepdims=True)
 
     src_emb = encode_norm(srcs)
-    cosines = np.sum(src_emb * encode_norm(cands), axis=1).clip(-1, 1)
+    cand_emb = encode_norm(cands)
+    cosines = np.sum(src_emb * cand_emb, axis=1).clip(-1, 1)
     if has_gt:
-        gt_cosines = np.sum(src_emb * encode_norm(gts), axis=1).clip(-1, 1)
+        gt_emb = encode_norm(gts)
+        gt_cosines = np.sum(src_emb * gt_emb, axis=1).clip(-1, 1)
+        # direct comparison: interpreter output vs ground truth (same language)
+        ig_cosines = np.sum(cand_emb * gt_emb, axis=1).clip(-1, 1)
 
     comet_scores, comet_system = None, None
     if use_comet:
@@ -126,6 +130,7 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                         sacrebleu.sentence_ter(c, [bleu_refs[i]]).score, 1),
                     "BERTScore": round(bert_f1[i], 1)})
         if has_gt:
+            row["Semantic vs GT (%)"] = round(float(ig_cosines[i]) * 100)
             row["Semantic GT (%)"] = round(float(gt_cosines[i]) * 100)
             row["Meaning (GT)"] = meaning_verdict(float(gt_cosines[i]))
         if comet_scores is not None:
@@ -139,7 +144,8 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                "sent_bleu_mean": float(np.mean([r["BLEU"] for r in rows])),
                "comet": comet_system,
                "bertscore": float(np.mean(bert_f1)),
-               "gt_sem_mean": float(np.mean(gt_cosines)) if has_gt else None}
+               "gt_sem_mean": float(np.mean(gt_cosines)) if has_gt else None,
+               "ig_sem_mean": float(np.mean(ig_cosines)) if has_gt else None}
     return pd.DataFrame(rows), summary
 
 
@@ -235,9 +241,18 @@ def render_results(srcs, cands, gts, dirs, key,
 
         # Groups 2 & 3 — semantic meaning-preservation vs the original
         # (multilingual embeddings, valid across languages)
-        st.markdown(f"#### 2️⃣ Meaning kept vs original — Interpreter and human")
-        m1, m2, _, _ = st.columns(4)
-        m1.metric("Interpreter semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
+        st.markdown(f"#### 2️⃣ Semantic similarity (meaning)")
+        m0, m1, m2, _ = st.columns(4)
+        m0.metric("Interpreter ↔ ground truth", f"{s['ig_sem_mean'] * 100:.0f}%",
+                  help=f"COMPARES: “{cand_col}” vs “{gt_col}” directly (both in "
+                       "the same language). WHY: the semantic counterpart of "
+                       "the group-1 scores — how close in MEANING the "
+                       "interpreter's rendition is to the certified reference, "
+                       "regardless of wording. EXAMPLE: “heart attack” vs "
+                       "“myocardial infarction” → high; unrelated content → "
+                       "low. Cosine of multilingual sentence embeddings, "
+                       "averaged over all sentences.")
+        m1.metric("Interpreter vs original", f"{s['sem_mean'] * 100:.0f}%",
                   help=f"COMPARES: “{cand_col}” vs “{src_col}” (the original "
                        "utterance). WHY: checks how much of the original's "
                        "MEANING survived into the interpretation, regardless "
@@ -247,7 +262,7 @@ def render_results(srcs, cands, gts, dirs, key,
                        "(meaning kept across languages); vs “I have high "
                        "blood pressure” ≈ 30% (meaning lost). Shown value = "
                        "average over all sentences.")
-        m2.metric("Ground-truth semantic similarity",
+        m2.metric("Ground truth vs original (human ceiling)",
                   f"{s['gt_sem_mean'] * 100:.0f}%",
                   help=f"COMPARES: “{gt_col}” (certified human translation) "
                        f"vs “{src_col}” (original) — the SAME measurement as "
@@ -337,6 +352,7 @@ def render_results(srcs, cands, gts, dirs, key,
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF++": "{:.1f}",
                                 "TER": "{:.1f}", "BERTScore": "{:.1f}",
                                 "Semantic (%)": "{:.0f}",
+                                "Semantic vs GT (%)": "{:.0f}",
                                 "Semantic GT (%)": "{:.0f}",
                                 "COMET": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
@@ -413,6 +429,13 @@ def render_results(srcs, cands, gts, dirs, key,
                  "Unbabel/wmt22-comet-da model scoring the triplet source = "
                  f"“{src_col}”, translation = “{cand_col}”, reference = "
                  f"{ref_name} (Rei et al. 2020/2022)."),
+        "Semantic vs GT (%)": st.column_config.NumberColumn(
+            "Semantic vs GT (%)",
+            help=f"WHAT: meaning similarity of the interpreter's rendition "
+                 f"to the certified reference, 0–100%. COMPARES: “{cand_col}” "
+                 f"vs “{gt_col}” directly (same language). HOW: cosine of "
+                 "multilingual sentence embeddings — the semantic "
+                 "counterpart of BLEU/chrF++/TER."),
         "Semantic GT (%)": st.column_config.NumberColumn(
             "Semantic GT (%)",
             help=f"WHAT: human benchmark — meaning similarity of “{gt_col}” "
@@ -446,6 +469,7 @@ def render_results(srcs, cands, gts, dirs, key,
                    f"Corpus TER (Interpreter vs {bleu_target})",
                    f"Corpus chrF++ (Interpreter vs {bleu_target})",
                    f"BERTScore F1 (Interpreter vs {bleu_target})",
+                   "Mean semantic similarity (Interpreter vs ground truth)",
                    "Mean semantic similarity (ground truth vs original)"],
         "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
                   *[round(p, 1) for p in s["precisions"]],
@@ -453,6 +477,7 @@ def render_results(srcs, cands, gts, dirs, key,
                   round(s["comet"], 3) if s["comet"] is not None else "n/a",
                   round(s["ter"], 2), round(s["chrf"], 2),
                   round(s["bertscore"], 2),
+                  round(s["ig_sem_mean"], 3) if s["ig_sem_mean"] is not None else "n/a",
                   round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a"],
     })
     with pd.ExcelWriter(buf) as xl:
@@ -677,7 +702,7 @@ st.markdown("""
 | **chrF++** | 0–100, higher = more similar wording | Single score: Interpreter output **vs** ground truth (or the original if no ground truth is selected) | F-score over character 1–6-grams **and** word 1–2-grams (β=2); more forgiving of small word changes and morphology than BLEU. | [m-popovic/chrF](https://github.com/m-popovic/chrF) (computed via sacrebleu, `word_order=2`) | [Popović (2015)](https://aclanthology.org/W15-3049/), WMT; chrF++: [Popović (2017)](https://aclanthology.org/W17-4770/), WMT |
 | **TER** | 0–100+, **lower** = closer (0 = identical) | Single score: Interpreter output **vs** ground truth (or the original if no ground truth is selected) | Translation Edit Rate: edits (insert/delete/substitute/shift) needed to turn the Interpreter output into the reference. | [mjpost/sacrebleu](https://github.com/mjpost/sacrebleu) | [Snover et al. (2006)](https://aclanthology.org/2006.amta-papers.25/), AMTA |
 | **BERTScore** | 0–100, higher = closer in meaning | Single score: Interpreter output **vs** ground truth (or the original if no ground truth is selected) | Token-level F1 from greedy cosine matching of contextual token embeddings (bert-base-multilingual-cased); rewards semantic matches even when the wording differs. | [Tiiiger/bert_score](https://github.com/Tiiiger/bert_score) | [Zhang et al. (2020)](https://openreview.net/forum?id=SkeHuCVFDr), ICLR |
-| **Semantic similarity** | 0–100%, higher = same meaning | Interpreter output **vs** original; also ground truth **vs** original (benchmark). Multilingual embeddings, so the comparison is valid across languages | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording or language. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | Method: [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP; multilingual model: [Reimers & Gurevych (2020)](https://aclanthology.org/2020.emnlp-main.365/), EMNLP; validation framework (human-judgment correlation, incl. cross-lingual En–Es): [Cer et al. (2017)](https://aclanthology.org/S17-2001/), SemEval |
+| **Semantic similarity** | 0–100%, higher = same meaning | Three comparisons: Interpreter output **vs** ground truth (direct); Interpreter output **vs** original; ground truth **vs** original (human ceiling). Multilingual embeddings, so cross-language comparisons are valid | Cosine similarity of sentence embeddings (paraphrase-multilingual-MiniLM-L12-v2); measures whether *meaning* is preserved regardless of wording or language. Drives the meaning verdicts (≥75% preserved, 55–75% review, <55% possible change). | [fivehills/TextSim_MTQE](https://github.com/fivehills/TextSim_MTQE) / [UKPLab/sentence-transformers](https://github.com/UKPLab/sentence-transformers) | Method: [Reimers & Gurevych (2019)](https://aclanthology.org/D19-1410/), EMNLP; multilingual model: [Reimers & Gurevych (2020)](https://aclanthology.org/2020.emnlp-main.365/), EMNLP; validation framework (human-judgment correlation, incl. cross-lingual En–Es): [Cer et al. (2017)](https://aclanthology.org/S17-2001/), SemEval |
 | **COMET** | 0–100, higher = better quality | Single score, full triplet: source = original script, translation = Interpreter output, reference = ground truth (or original if none) | Neural metric (wmt22-comet-da) trained on human quality judgments of translations; sensitive to meaning errors rather than wording changes. | [Unbabel/COMET](https://github.com/Unbabel/COMET) | [Rei et al. (2020)](https://aclanthology.org/2020.emnlp-main.213/), EMNLP; model: [Rei et al. (2022)](https://aclanthology.org/2022.wmt-1.52/), WMT |
 """)
 st.caption(
