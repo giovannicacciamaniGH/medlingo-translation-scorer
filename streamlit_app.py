@@ -473,6 +473,73 @@ def render_results(srcs, cands, gts, dirs, key,
             "change* deserve a manual read.")
 
 
+@st.cache_data(show_spinner=False)
+def template_xlsx() -> bytes:
+    """The input template offered for download on the start screen."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+    data = pd.DataFrame({
+        "Encounter ID": ["EXAMPLE-01", "EXAMPLE-01", ""],
+        "Turn": [1, 2, ""],
+        "Direction": ["Doctor (En→Es)", "Patient (Es→En)", ""],
+        "Original script": [
+            "The patient presents with acute myocardial infarction and "
+            "requires immediate intervention.",
+            "Me duele el pecho desde esta mañana y me falta el aire.", ""],
+        "Interpreter output": [
+            "El paciente tiene un ataque cardiaco grave y necesita "
+            "tratamiento de inmediato.",
+            "My chest has been hurting since this morning and I am short "
+            "of breath.", ""],
+        "Ground truth": [
+            "El paciente presenta un infarto agudo de miocardio y requiere "
+            "intervención inmediata.",
+            "My chest has been hurting since this morning and I feel short "
+            "of breath.", ""],
+    })
+    instructions = pd.DataFrame({"Instructions": [
+        "ONE file for the whole study - every turn, one row per utterance.",
+        "",
+        "Direction          = who is speaking; use two consistent labels, "
+        "e.g. 'Doctor (En→Es)' and 'Patient (Es→En)'. Scores are reported "
+        "per direction plus overall.",
+        "Original script    = what was actually said, in the speaker's "
+        "language (doctor rows: English line; patient rows: Spanish line).",
+        "Interpreter output = the interpreter's rendition (verified "
+        "transcript).",
+        "Ground truth       = the certified reference translation of that "
+        "turn.",
+        "Encounter ID and Turn are optional helpers - ignored by the app.",
+        "",
+        "Rules:",
+        "- All three text cells in a row MUST be the same utterance "
+        "(alignment is critical).",
+        "- Delete the two gray example rows before scoring.",
+        "- Leave unusable cells truly empty - never write N/A or '-'.",
+        "- Do not pre-clean casing/punctuation; keep disfluency handling "
+        "consistent across columns.",
+        "- Keep Direction labels spelled identically on every row.",
+    ]})
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+        data.to_excel(xl, sheet_name="Data", index=False)
+        instructions.to_excel(xl, sheet_name="READ ME", index=False)
+        ws = xl.book["Data"]
+        for i, w in enumerate([13, 7, 17, 52, 52, 52], 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        fill = PatternFill("solid", fgColor="0969DA")
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = fill
+            cell.alignment = Alignment(vertical="center")
+        for row in ws.iter_rows(min_row=2, max_row=3):
+            for cell in row:
+                cell.font = Font(italic=True, color="888888")
+        xl.book["READ ME"].column_dimensions["A"].width = 115
+        xl.book["READ ME"]["A1"].font = Font(bold=True)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------- UI
 
 st.title("🩺 Interpreter Translation Scorer")
@@ -482,6 +549,17 @@ st.caption("Upload a spreadsheet with the original script, the Interpreter outpu
            "a score for every sentence. With a ground truth, Interpreter is scored "
            "against the human reference; without one, it is scored against the "
            "original script.")
+
+t1, t2 = st.columns([1, 2])
+t1.download_button("📥 Download the input template (.xlsx)", template_xlsx(),
+                   file_name="template_encounter.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument"
+                        ".spreadsheetml.sheet",
+                   key="tpl_dl")
+t2.markdown(":red[**Your file must follow this template.**] One utterance "
+            "per row; columns: Direction, Original script, Interpreter "
+            "output, Ground truth. The template's READ ME sheet has the "
+            "full rules — delete its gray example rows before uploading.")
 
 uploaded = st.file_uploader(
     "Excel or CSV: original script, Interpreter output, ground truth "
