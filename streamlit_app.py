@@ -168,85 +168,14 @@ def autodetect(cols):
     return src, cand, gt
 
 
-# ---------------------------------------------------------------- UI
-
-st.title("🩺 Interpreter Translation Scorer")
-st.caption("Upload a spreadsheet with the original script, the Interpreter output, "
-           "and — optionally — a ground-truth human reference. You get overall "
-           "translation scores (BLEU, chrF++, TER, semantic similarity, COMET) and "
-           "a score for every sentence. With a ground truth, Interpreter is scored "
-           "against the human reference; without one, it is scored against the "
-           "original script.")
-
-uploaded = st.file_uploader(
-    "Excel or CSV with two columns (original script, Interpreter output) "
-    "or three (+ ground truth)",
-    type=["xlsx", "xlsm", "xls", "csv", "tsv"])
-
-use_comet = st.toggle("Include COMET (slower; needs the 2 GB model)", value=True)
-
-if uploaded:
-    suffix = Path(uploaded.name).suffix.lower()
-    try:
-        if suffix in (".xlsx", ".xlsm", ".xls"):
-            df = pd.read_excel(uploaded)
-        elif suffix == ".tsv":
-            df = pd.read_csv(uploaded, sep="\t")
-        else:
-            df = pd.read_csv(uploaded)
-    except Exception as e:
-        st.error(f"Could not read the file: {e}")
-        st.stop()
-
-    if len(df.columns) < 2:
-        st.error("The file needs at least two columns "
-                 "(original script and Interpreter output).")
-        st.stop()
-
-    cols = list(df.columns)
-    src_default, cand_default, gt_default = autodetect(cols)
-    c1, c2, c3 = st.columns(3)
-    src_col = c1.selectbox("Original script (source) column", cols,
-                           index=cols.index(src_default))
-    cand_col = c2.selectbox("Interpreter output column", cols,
-                            index=cols.index(cand_default))
-    NONE = "— none (score against the original) —"
-    gt_opts = [NONE] + cols
-    gt_col = c3.selectbox("Ground truth (human reference) column — optional",
-                          gt_opts,
-                          index=gt_opts.index(gt_default) if gt_default else 0)
-    gt_col = None if gt_col == NONE else gt_col
-    if len({src_col, cand_col, gt_col} - {None}) < (3 if gt_col else 2):
-        st.error("The selected columns must all be different.")
-        st.stop()
-
-    use_cols = [src_col, cand_col] + ([gt_col] if gt_col else [])
-    sub = df[use_cols].dropna()
-    series = [sub[c].astype(str).str.strip() for c in use_cols]
-    mask = np.logical_and.reduce([sr != "" for sr in series])
-    srcs = series[0][mask].tolist()
-    cands = series[1][mask].tolist()
-    gts = series[2][mask].tolist() if gt_col else []
-    if not srcs:
-        st.error("No usable rows (empty cells were removed).")
-        st.stop()
-
-    if gt_col:
-        st.caption("**3-column mode:** BLEU, chrF++ and TER compare the Interpreter "
-                   "output against the **ground truth** (reference-based, as "
-                   "these metrics were designed), and COMET uses its full "
-                   "triplet (source = original, translation = Interpreter, reference = "
-                   "ground truth) — one score each. Semantic similarity uses "
-                   "**multilingual** embeddings and is computed against the "
-                   "original for both Interpreter and ground truth, as a "
-                   "meaning-preservation check that works across languages.")
-    else:
-        st.caption("**2-column mode:** no ground truth selected — all scores "
-                   "compare Interpreter against the original script (for COMET, the "
-                   "original serves as both source and reference).")
-
+def render_results(srcs, cands, gts, dirs, key,
+                   src_col, cand_col, gt_col, use_comet):
+    """Score one subset of rows and render the full results block."""
     with st.spinner(f"Scoring {len(srcs)} sentences…"):
         table, s = score_pairs(tuple(srcs), tuple(cands), tuple(gts), use_comet)
+    table = table.copy()
+    if dirs:
+        table.insert(1, "Direction", list(dirs))
 
     # ---- headline scores
     ref_name = f"“{gt_col}” (ground truth)" if gt_col else f"“{src_col}” (original)"
@@ -333,9 +262,9 @@ if uploaded:
                                         "Moderate overlap", "High overlap",
                                         "Very high overlap", "Near-identical"]
                             if l in set(table["Wording"])]
-    pick_verdict = f1.radio("Filter by meaning", verdict_opts, horizontal=True)
+    pick_verdict = f1.radio("Filter by meaning", verdict_opts, horizontal=True, key=f"vm_{key}")
     pick_label = f2.radio("Filter by wording overlap (BLEU)", label_opts,
-                          horizontal=True)
+                          horizontal=True, key=f"wb_{key}")
 
     view = table
     if pick_verdict != "All":
@@ -456,6 +385,10 @@ if uploaded:
                  f"“{src_col}”. HOW: same ≥75% / 55–75% / <55% bands as the "
                  "Meaning column, applied to Semantic GT (%)."),
     }
+    if dirs:
+        col_help["Direction"] = st.column_config.TextColumn(
+            "Direction", help="Your direction/speaker label for this row "
+                              "(e.g. Doctor En→Es / Patient Es→En).")
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
 
@@ -488,7 +421,7 @@ if uploaded:
     st.download_button("⬇️ Download full results (.xlsx)", buf.getvalue(),
                        file_name="translation_scores.xlsx",
                        mime="application/vnd.openxmlformats-officedocument"
-                            ".spreadsheetml.sheet")
+                            ".spreadsheetml.sheet", key=f"dl_{key}")
 
     st.info("**Reading the scores:** BLEU, chrF++ and TER measure *surface* "
             "overlap with the reference — they reward wording close to the "
@@ -498,6 +431,123 @@ if uploaded:
             "(lower BLEU/chrF++) and still be excellent — check COMET and the "
             "semantic scores in that case. Rows flagged *Possible meaning "
             "change* deserve a manual read.")
+
+
+# ---------------------------------------------------------------- UI
+
+st.title("🩺 Interpreter Translation Scorer")
+st.caption("Upload a spreadsheet with the original script, the Interpreter output, "
+           "and — optionally — a ground-truth human reference. You get overall "
+           "translation scores (BLEU, chrF++, TER, semantic similarity, COMET) and "
+           "a score for every sentence. With a ground truth, Interpreter is scored "
+           "against the human reference; without one, it is scored against the "
+           "original script.")
+
+uploaded = st.file_uploader(
+    "Excel or CSV: original script, Interpreter output, ground truth "
+    "(optional), and a direction/speaker column (optional — scores each "
+    "direction separately)",
+    type=["xlsx", "xlsm", "xls", "csv", "tsv"])
+
+use_comet = st.toggle("Include COMET (slower; needs the 2 GB model)", value=True)
+
+if uploaded:
+    suffix = Path(uploaded.name).suffix.lower()
+    try:
+        if suffix in (".xlsx", ".xlsm", ".xls"):
+            df = pd.read_excel(uploaded)
+        elif suffix == ".tsv":
+            df = pd.read_csv(uploaded, sep="\t")
+        else:
+            df = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Could not read the file: {e}")
+        st.stop()
+
+    if len(df.columns) < 2:
+        st.error("The file needs at least two columns "
+                 "(original script and Interpreter output).")
+        st.stop()
+
+    cols = list(df.columns)
+    src_default, cand_default, gt_default = autodetect(cols)
+    c1, c2, c3, c4 = st.columns(4)
+    src_col = c1.selectbox("Original script (source) column", cols,
+                           index=cols.index(src_default))
+    cand_col = c2.selectbox("Interpreter output column", cols,
+                            index=cols.index(cand_default))
+    NONE = "— none (score against the original) —"
+    gt_opts = [NONE] + cols
+    gt_col = c3.selectbox("Ground truth (human reference) column — optional",
+                          gt_opts,
+                          index=gt_opts.index(gt_default) if gt_default else 0)
+    gt_col = None if gt_col == NONE else gt_col
+    DNONE = "— none (score everything together) —"
+    dir_default = next(
+        (c for c in cols
+         if any(k in str(c).lower() for k in ("direction", "speaker", "role",
+                                              "who", "turn type"))
+         and c not in (src_col, cand_col, gt_col)), None)
+    d_opts = [DNONE] + cols
+    dir_col = c4.selectbox(
+        "Direction/speaker column — optional",
+        d_opts, index=d_opts.index(dir_default) if dir_default else 0,
+        help="e.g. 'Doctor (En→Es)' / 'Patient (Es→En)'. When set, scores are "
+             "reported separately per direction (in tabs) plus an overall tab.")
+    dir_col = None if dir_col == DNONE else dir_col
+    picked = [c for c in (src_col, cand_col, gt_col, dir_col) if c is not None]
+    if len(set(picked)) < len(picked):
+        st.error("The selected columns must all be different.")
+        st.stop()
+
+    use_cols = [src_col, cand_col] + ([gt_col] if gt_col else [])
+    sub = df[use_cols].dropna()
+    series = [sub[c].astype(str).str.strip() for c in use_cols]
+    mask = np.logical_and.reduce([sr != "" for sr in series])
+    srcs = series[0][mask].tolist()
+    cands = series[1][mask].tolist()
+    gts = series[2][mask].tolist() if gt_col else []
+    dirs = []
+    if dir_col:
+        dseries = (df.loc[sub.index, dir_col].fillna("Unlabeled")
+                   .astype(str).str.strip().replace("", "Unlabeled"))
+        dirs = dseries[mask].tolist()
+    if not srcs:
+        st.error("No usable rows (empty cells were removed).")
+        st.stop()
+
+    if gt_col:
+        st.caption("**3-column mode:** BLEU, chrF++ and TER compare the Interpreter "
+                   "output against the **ground truth** (reference-based, as "
+                   "these metrics were designed), and COMET uses its full "
+                   "triplet (source = original, translation = Interpreter, reference = "
+                   "ground truth) — one score each. Semantic similarity uses "
+                   "**multilingual** embeddings and is computed against the "
+                   "original for both Interpreter and ground truth, as a "
+                   "meaning-preservation check that works across languages.")
+    else:
+        st.caption("**2-column mode:** no ground truth selected — all scores "
+                   "compare Interpreter against the original script (for COMET, the "
+                   "original serves as both source and reference).")
+
+    if dirs and len(set(dirs)) > 1:
+        groups = list(dict.fromkeys(dirs))  # preserve file order
+        tabs = st.tabs([f"All directions ({len(srcs)})"] +
+                       [f"{g} ({dirs.count(g)})" for g in groups])
+        with tabs[0]:
+            render_results(srcs, cands, gts, dirs, "all",
+                           src_col, cand_col, gt_col, use_comet)
+        for n, (tab, g) in enumerate(zip(tabs[1:], groups)):
+            idx = [i for i, d in enumerate(dirs) if d == g]
+            with tab:
+                render_results([srcs[i] for i in idx],
+                               [cands[i] for i in idx],
+                               [gts[i] for i in idx] if gts else [],
+                               [dirs[i] for i in idx], f"g{n}",
+                               src_col, cand_col, gt_col, use_comet)
+    else:
+        render_results(srcs, cands, gts, [], "all",
+                       src_col, cand_col, gt_col, use_comet)
 
 # ---- legend & references (always visible)
 st.divider()
