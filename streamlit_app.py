@@ -186,40 +186,80 @@ def render_results(srcs, cands, gts, dirs, key,
         st.markdown(f"#### 1️⃣ Single scores — “{cand_col}” vs “{gt_col}”")
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Overall BLEU (corpus)", f"{s['bleu']:.1f}",
-                  help=f"{s['bleu_label']}. Computed once: “{cand_col}” vs "
-                       f"“{gt_col}” (ground truth). Word-sequence overlap.")
+                  help=f"{s['bleu_label']}. COMPARES: “{cand_col}” vs "
+                       f"“{gt_col}” (ground truth). WHY: measures how close "
+                       "the interpreter's wording is to the certified "
+                       "reference (word-sequence overlap, 0–100). EXAMPLE: "
+                       "interpreter “Tome dos tabletas de metformina…” vs "
+                       "ground truth “Tome dos pastillas de metformina…” — "
+                       "almost every word sequence matches except "
+                       "tabletas/pastillas, so BLEU is high but not 100.")
         c2.metric("chrF++ (corpus)", f"{s['chrf']:.1f}",
-                  help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
-                       "truth). Character 6-gram + word 1/2-gram F-score "
-                       "(chrF++, Popović 2017).")
+                  help=f"COMPARES: “{cand_col}” vs “{gt_col}” (ground truth). "
+                       "WHY: like BLEU but at character level (+ word "
+                       "1–2-grams), so near-misses get partial credit "
+                       "(chrF++, Popović 2017). EXAMPLE: “intervención "
+                       "inmediata” vs “tratamiento inmediato” — BLEU sees no "
+                       "matching words, but chrF++ credits the shared "
+                       "characters of inmediata/inmediato.")
         c3.metric("TER (corpus, lower = closer)", f"{s['ter']:.1f}",
-                  help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
-                       "truth). Edits needed to match the ground truth — "
-                       "lower is closer, 0 = identical.")
+                  help=f"COMPARES: “{cand_col}” vs “{gt_col}” (ground truth). "
+                       "WHY: counts the edits (insert/delete/substitute/"
+                       "shift) needed to turn the interpreter's sentence "
+                       "into the reference — LOWER is closer, 0 = identical. "
+                       "EXAMPLE: “I feel dizzy when I stand up fast” → "
+                       "“I get dizzy when I stand up quickly” takes 2 "
+                       "substitutions out of 9 words ≈ TER 22.")
         c4.metric("BERTScore F1", f"{s['bertscore']:.1f}",
-                  help=f"Computed once: “{cand_col}” vs “{gt_col}” (ground "
-                       "truth). Token-level semantic F1 from contextual "
-                       "embeddings (Zhang et al. 2020) — rewards meaning "
-                       "matches even when the wording differs.")
+                  help=f"COMPARES: “{cand_col}” vs “{gt_col}” (ground truth). "
+                       "WHY: matches words by MEANING, not spelling, using "
+                       "contextual embeddings (Zhang et al. 2020) — so a "
+                       "correct synonym isn't punished. EXAMPLE: interpreter "
+                       "“heart attack” vs ground truth “myocardial "
+                       "infarction” — zero word overlap (low BLEU), but "
+                       "BERTScore stays high because the tokens mean the "
+                       "same thing.")
         if s["comet"] is not None:
             c5.metric("COMET", f"{s['comet'] * 100:.0f}",
-                      help=f"Computed once, full triplet: source = “{src_col}”, "
-                           f"translation = “{cand_col}”, reference = “{gt_col}”. "
-                           "0–100, higher = better quality.")
+                      help=f"COMPARES all three columns at once: source = "
+                           f"“{src_col}”, translation = “{cand_col}”, "
+                           f"reference = “{gt_col}”. WHY: a neural model "
+                           "trained on human quality ratings of translations "
+                           "— it sees the original too, so it judges overall "
+                           "translation quality, and collapses on meaning "
+                           "errors even when the sentence is fluent. "
+                           "EXAMPLE: rendering “Soy alérgico a la "
+                           "penicilina” as the fluent-but-wrong “I have had "
+                           "high blood pressure” drops COMET from ~90 to "
+                           "~60.")
 
         # Groups 2 & 3 — semantic meaning-preservation vs the original
         # (multilingual embeddings, valid across languages)
         st.markdown(f"#### 2️⃣ Meaning kept vs original — Interpreter and human")
         m1, m2, _, _ = st.columns(4)
         m1.metric("Interpreter semantic similarity", f"{s['sem_mean'] * 100:.0f}%",
-                  help=f"{vs_orig} Meaning similarity from multilingual "
-                       "sentence embeddings — how much of the original's "
-                       "meaning the Interpreter output preserves.")
+                  help=f"COMPARES: “{cand_col}” vs “{src_col}” (the original "
+                       "utterance). WHY: checks how much of the original's "
+                       "MEANING survived into the interpretation, regardless "
+                       "of wording or language (multilingual embeddings). "
+                       "EXAMPLE: original “Soy alérgico a la penicilina” vs "
+                       "interpreter “I am allergic to penicillin” ≈ 95% "
+                       "(meaning kept across languages); vs “I have high "
+                       "blood pressure” ≈ 30% (meaning lost). Shown value = "
+                       "average over all sentences.")
         m2.metric("Ground-truth semantic similarity",
                   f"{s['gt_sem_mean'] * 100:.0f}%",
-                  help=f"Compares “{gt_col}” vs “{src_col}” (original). Human "
-                       "benchmark for meaning preservation — compare with the "
-                       "Interpreter value on the left.")
+                  help=f"COMPARES: “{gt_col}” (certified human translation) "
+                       f"vs “{src_col}” (original) — the SAME measurement as "
+                       "the card on the left, applied to the human "
+                       "reference. WHY: calibration. Cross-language "
+                       "similarity never reaches 100% even for a perfect "
+                       "translation, so this shows what a professional "
+                       "scores on the same sentences — the human ceiling. "
+                       "EXAMPLE: interpreter 88% vs human 87% → the "
+                       "interpreter preserves meaning at human level; "
+                       "interpreter 74% vs human 87% → meaning is being "
+                       "lost — check the red rows in the table.")
     else:
         labels = ["Overall BLEU (corpus)", "Mean semantic similarity",
                   "chrF++ (corpus)", "TER (corpus, lower = closer)",
