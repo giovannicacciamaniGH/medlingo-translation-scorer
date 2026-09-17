@@ -256,13 +256,15 @@ def render_results(srcs, cands, gts, dirs, key,
                 fired.append("1")
             elif meaning == "Mostly preserved — review":
                 fired.append("2")
+            if table["Semantic Int↔GT (%)"].iloc[i] < 75:
+                fired.append("3")
             if ("COMET" in table.columns
                     and table["COMET"].iloc[i] < 70
                     and meaning == "Meaning preserved"):
-                fired.append("3")
+                fired.append("4")
             n_gt = max(len(str(gts[i]).split()), 1)
             if len(str(cands[i]).split()) < 0.6 * n_gt:
-                fired.append("4")
+                fired.append("5")
             flags.append("Rule " + "+".join(fired) if fired else "")
         rng = random.Random(42)  # fixed seed -> reproducible control sample
         unflagged = [i for i, f in enumerate(flags) if not f]
@@ -423,14 +425,17 @@ def render_results(srcs, cands, gts, dirs, key,
                             "rules test only the interpreter's own output: "
                             "Rule 1 = Meaning Int↔Orig red (Semantic "
                             "Int↔Orig <55%). Rule 2 = Meaning Int↔Orig "
-                            "yellow (55–75%). Rule 3 = COMET <70 despite "
-                            "green Meaning Int↔Orig (fluent-but-wrong "
-                            "screen). Rule 4 = interpreter output <60% of "
-                            "the ground truth's word count (omission "
-                            "screen). 'Control' = random 10% of unflagged "
-                            "rows (fixed seed 42) to estimate the screen's "
-                            "false-negative rate. The 'Needs review' column "
-                            "shows which rule fired for each row."):
+                            "yellow (55–75%). Rule 3 = Semantic Int↔GT "
+                            "<75% (rendition far in meaning from the "
+                            "certified reference). Rule 4 = COMET <70 "
+                            "despite green Meaning Int↔Orig "
+                            "(fluent-but-wrong screen). Rule 5 = "
+                            "interpreter output <60% of the ground truth's "
+                            "word count (omission screen). 'Control' = "
+                            "random 10% of unflagged rows (fixed seed 42) "
+                            "to estimate the screen's false-negative rate. "
+                            "The 'Needs review' column shows which rule "
+                            "fired for each row."):
             view = view[view["Needs review"] != ""]
     st.caption(f"{len(view)} of {len(table)} sentences shown")
 
@@ -585,11 +590,13 @@ def render_results(srcs, cands, gts, dirs, key,
                  "is selected if ANY rule fires. The rules test only the "
                  "interpreter's own output. Rule 1: Meaning Int↔Orig red "
                  "(Semantic Int↔Orig <55%). Rule 2: Meaning Int↔Orig "
-                 "yellow (55–75%). Rule 3: COMET <70 despite green Meaning "
-                 "Int↔Orig (fluent-but-wrong screen). Rule 4: interpreter "
-                 "output <60% of the ground truth's word count (omission "
-                 "screen). 'Control' = random 10% of unflagged rows (seed "
-                 "42) to estimate the screen's false-negative rate.")
+                 "yellow (55–75%). Rule 3: Semantic Int↔GT <75% (rendition "
+                 "far in meaning from the certified reference). Rule 4: "
+                 "COMET <70 despite green Meaning Int↔Orig "
+                 "(fluent-but-wrong screen). Rule 5: interpreter output "
+                 "<60% of the ground truth's word count (omission screen). "
+                 "'Control' = random 10% of unflagged rows (seed 42) to "
+                 "estimate the screen's false-negative rate.")
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
 
