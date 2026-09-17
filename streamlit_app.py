@@ -694,28 +694,46 @@ def render_results(srcs, cands, gts, dirs, key,
 
     # ---- download
     bleu_target = "ground truth" if gt_col else "original"
-    summary_df = pd.DataFrame({
-        "Metric": [f"Corpus BLEU (Interpreter vs {bleu_target})",
-                   "Sentences scored", "Brevity penalty",
-                   "1-gram precision", "2-gram precision", "3-gram precision",
-                   "4-gram precision", "Mean sentence BLEU",
-                   "Mean semantic similarity (Interpreter vs original)",
-                   f"COMET system score (src=original, mt=Interpreter, "
-                   f"ref={bleu_target})",
-                   f"Corpus TER (Interpreter vs {bleu_target})",
-                   f"Corpus chrF++ (Interpreter vs {bleu_target})",
-                   f"BERTScore F1 (Interpreter vs {bleu_target})",
-                   "Mean semantic similarity (Interpreter vs ground truth)",
-                   "Mean semantic similarity (ground truth vs original)"],
-        "Value": [round(s["bleu"], 2), len(srcs), round(s["bp"], 3),
-                  *[round(p, 1) for p in s["precisions"]],
-                  round(s["sent_bleu_mean"], 2), round(s["sem_mean"], 3),
-                  round(s["comet"], 3) if s["comet"] is not None else "n/a",
-                  round(s["ter"], 2), round(s["chrf"], 2),
-                  round(s["bertscore"], 2),
-                  round(s["ig_sem_mean"], 3) if s["ig_sem_mean"] is not None else "n/a",
-                  round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a"],
-    })
+    metric_labels = [f"Corpus BLEU (Interpreter vs {bleu_target})",
+                     "Sentences scored", "Brevity penalty",
+                     "1-gram precision", "2-gram precision",
+                     "3-gram precision", "4-gram precision",
+                     "Mean sentence BLEU",
+                     "Mean semantic similarity (Interpreter vs original)",
+                     f"COMET system score (src=original, mt=Interpreter, "
+                     f"ref={bleu_target})",
+                     f"Corpus TER (Interpreter vs {bleu_target})",
+                     f"Corpus chrF++ (Interpreter vs {bleu_target})",
+                     f"BERTScore F1 (Interpreter vs {bleu_target})",
+                     "Mean semantic similarity (Interpreter vs ground truth)",
+                     "Mean semantic similarity (ground truth vs original)"]
+
+    def _summary_values(s_, n_):
+        return [round(s_["bleu"], 2), n_, round(s_["bp"], 3),
+                *[round(p, 1) for p in s_["precisions"]],
+                round(s_["sent_bleu_mean"], 2), round(s_["sem_mean"], 3),
+                round(s_["comet"], 3) if s_["comet"] is not None else "n/a",
+                round(s_["ter"], 2), round(s_["chrf"], 2),
+                round(s_["bertscore"], 2),
+                round(s_["ig_sem_mean"], 3)
+                if s_["ig_sem_mean"] is not None else "n/a",
+                round(s_["gt_sem_mean"], 3)
+                if s_["gt_sem_mean"] is not None else "n/a"]
+
+    sdata = {"Metric": metric_labels}
+    if dirs and len(set(dirs)) > 1:
+        # one column per direction next to the overall values
+        sdata[f"All ({len(srcs)})"] = _summary_values(s, len(srcs))
+        for g in dict.fromkeys(dirs):
+            idx = [i for i, d in enumerate(dirs) if d == g]
+            _, sg = score_pairs(tuple(srcs[i] for i in idx),
+                                tuple(cands[i] for i in idx),
+                                tuple(gts[i] for i in idx) if gts else (),
+                                use_comet)
+            sdata[f"{g} ({len(idx)})"] = _summary_values(sg, len(idx))
+    else:
+        sdata["Value"] = _summary_values(s, len(srcs))
+    summary_df = pd.DataFrame(sdata)
     st.download_button("⬇️ Download full results (.xlsx)",
                        results_xlsx(table, summary_df),
                        file_name="translation_scores.xlsx",
