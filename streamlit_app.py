@@ -131,6 +131,7 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
                     "BERTScore": round(bert_f1[i], 1)})
         if has_gt:
             row["Semantic Int↔GT (%)"] = round(float(ig_cosines[i]) * 100)
+            row["Meaning Int↔GT"] = meaning_verdict(float(ig_cosines[i]))
             row["Semantic GT↔Orig (%)"] = round(float(gt_cosines[i]) * 100)
             row["Meaning GT↔Orig"] = meaning_verdict(float(gt_cosines[i]))
         if comet_scores is not None:
@@ -201,6 +202,7 @@ def results_xlsx(table, summary_df) -> bytes:
         chip_maps = {}
         for name, mapping in [("Wording", WORD_X),
                               ("Meaning Int↔Orig", MEAN_X),
+                              ("Meaning Int↔GT", MEAN_X),
                               ("Meaning GT↔Orig", MEAN_X)]:
             if name in cols:
                 chip_maps[cols.index(name) + 1] = mapping
@@ -452,7 +454,8 @@ def render_results(srcs, cands, gts, dirs, key,
     }
     chip = "; border-radius:999px; text-align:center; font-weight:600"
     wording_cols = [c for c in ("Wording",) if c in view.columns]
-    meaning_cols = [c for c in ("Meaning Int↔Orig", "Meaning GT↔Orig") if c in view.columns]
+    meaning_cols = [c for c in ("Meaning Int↔Orig", "Meaning Int↔GT",
+                                "Meaning GT↔Orig") if c in view.columns]
     review_cols = [c for c in ("Needs review",) if c in view.columns]
 
     def review_style(v):
@@ -554,6 +557,14 @@ def render_results(srcs, cands, gts, dirs, key,
                  f"vs “{gt_col}” directly (same language). HOW: cosine of "
                  "multilingual sentence embeddings — the semantic "
                  "counterpart of BLEU/chrF++/TER."),
+        "Meaning Int↔GT": st.column_config.TextColumn(
+            "Meaning Int↔GT",
+            help=f"WHAT: verdict on the Semantic Int↔GT (%) score — is the "
+                 f"interpreter's rendition close in meaning to “{gt_col}”? "
+                 "HOW: same ≥75% / 55–75% / <55% bands as the other Meaning "
+                 "columns. Note: both texts are in the same language here, "
+                 "so similarities run higher than the cross-lingual "
+                 "comparisons — read borderline verdicts accordingly."),
         "Semantic GT↔Orig (%)": st.column_config.NumberColumn(
             "Semantic GT↔Orig (%)",
             help=f"WHAT: human benchmark — meaning similarity of “{gt_col}” "
