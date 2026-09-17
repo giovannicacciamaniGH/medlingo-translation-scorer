@@ -423,18 +423,22 @@ def render_results(srcs, cands, gts, dirs, key,
         if st.checkbox(f"Show only sentences selected for clinical review "
                        f"({n_sel} of {len(table)})", key=f"nr_{key}",
                        help="Selection is automatic and reproducible — a "
-                            "sentence is selected if ANY rule fires: "
-                            "Rule 1 = Meaning red (semantic vs original "
-                            "<55%). Rule 2 = Meaning yellow (55–75%). "
-                            "Rule 3 = interpreter ≥20 points below the "
-                            "human ceiling on the same sentence. Rule 4 = "
-                            "COMET <70 despite green Meaning (fluent-but-"
-                            "wrong screen). Rule 5 = output <60% of the "
-                            "ground truth's word count (omission screen). "
-                            "'Control' = random 10% of unflagged rows "
-                            "(fixed seed 42) to estimate the screen's "
-                            "false-negative rate. The 'Needs review' "
-                            "column shows which rule fired for each row."):
+                            "sentence is selected if ANY rule fires. All "
+                            "rules use the Int↔Orig comparison (interpreter "
+                            "vs original): "
+                            "Rule 1 = Meaning Int↔Orig red (Semantic "
+                            "Int↔Orig <55%). Rule 2 = Meaning Int↔Orig "
+                            "yellow (55–75%). Rule 3 = Semantic GT↔Orig "
+                            "minus Semantic Int↔Orig ≥20 points (interpreter "
+                            "below the human ceiling on the same sentence). "
+                            "Rule 4 = COMET <70 despite green Meaning "
+                            "Int↔Orig (fluent-but-wrong screen). Rule 5 = "
+                            "interpreter output <60% of the ground truth's "
+                            "word count (omission screen). 'Control' = "
+                            "random 10% of unflagged rows (fixed seed 42) "
+                            "to estimate the screen's false-negative rate. "
+                            "The 'Needs review' column shows which rule "
+                            "fired for each row."):
             view = view[view["Needs review"] != ""]
     st.caption(f"{len(view)} of {len(table)} sentences shown")
 
@@ -585,11 +589,13 @@ def render_results(srcs, cands, gts, dirs, key,
     if "Needs review" in view.columns:
         col_help["Needs review"] = st.column_config.TextColumn(
             "Needs review",
-            help="Pre-specified selection for clinical review; a sentence is "
-                 "selected if ANY rule fires. Rule 1: Meaning red (semantic "
-                 "vs original <55%). Rule 2: Meaning yellow (55–75%). Rule "
-                 "3: interpreter ≥20 points below the human ceiling on this "
-                 "row. Rule 4: COMET <70 despite green Meaning "
+            help="Pre-specified selection for clinical review; a sentence "
+                 "is selected if ANY rule fires. All rules use the Int↔Orig "
+                 "comparison. Rule 1: Meaning Int↔Orig red (Semantic "
+                 "Int↔Orig <55%). Rule 2: Meaning Int↔Orig yellow "
+                 "(55–75%). Rule 3: Semantic GT↔Orig − Semantic Int↔Orig "
+                 "≥20 points (interpreter below the human ceiling on this "
+                 "row). Rule 4: COMET <70 despite green Meaning Int↔Orig "
                  "(fluent-but-wrong screen). Rule 5: interpreter output "
                  "<60% of the ground truth's word count (omission screen). "
                  "'Control' = random 10% of unflagged rows (seed 42) to "
