@@ -234,6 +234,70 @@ def results_xlsx(table, summary_df) -> bytes:
     return buf.getvalue()
 
 
+FLORES_TYPES = ["Omission", "Addition", "Substitution",
+                "Editorialization", "False fluency"]
+
+
+def reviewer_xlsx(sel) -> bytes:
+    """Blinded worksheet: selected rows in randomized order, no reference
+    translation and no scores; one Yes/No column per Flores error type."""
+    import random
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Font, PatternFill, Alignment
+
+    sel = sel.copy()
+    order = list(sel.index)
+    random.Random(4242).shuffle(order)  # fixed seed, reproducible
+    sel = sel.loc[order]
+
+    cols = {"Review ID": [f"R{n + 1:03d}" for n in range(len(sel))],
+            "Direction": (sel["Direction"].values
+                          if "Direction" in sel.columns else ""),
+            "Original": sel["Original script"].values,
+            "Interpretation": sel["Interpreter output"].values}
+    for t in FLORES_TYPES:
+        cols[t] = ""
+    cols["Clinical significance"] = ""
+    cols["Notes"] = ""
+    review = pd.DataFrame(cols)
+    keydf = pd.DataFrame({
+        "Review ID": review["Review ID"].values,
+        "Row # in results": sel["#"].values,
+        "Selected by": sel["Needs review"].values,
+    })
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+        review.to_excel(xl, sheet_name="Review", index=False)
+        keydf.to_excel(xl, sheet_name="KEY - REMOVE BEFORE SENDING",
+                       index=False)
+        ws = xl.book["Review"]
+        widths = [10, 16, 55, 55] + [14] * len(FLORES_TYPES) + [26, 30]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        fill = PatternFill("solid", fgColor="0969DA")
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = fill
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        n = len(review) + 1
+        dv_yn = DataValidation(type="list", allow_blank=True,
+                               formula1='"Yes,No"')
+        ws.add_data_validation(dv_yn)
+        first = 5  # first Flores column (E)
+        for j in range(len(FLORES_TYPES)):
+            col = get_column_letter(first + j)
+            dv_yn.add(f"{col}2:{col}{n}")
+        dv_sig = DataValidation(
+            type="list", allow_blank=True,
+            formula1='"No potential consequence,Potential consequence"')
+        ws.add_data_validation(dv_sig)
+        sig_col = get_column_letter(first + len(FLORES_TYPES))
+        dv_sig.add(f"{sig_col}2:{sig_col}{n}")
+    return buf.getvalue()
+
+
 def render_results(srcs, cands, gts, dirs, key,
                    src_col, cand_col, gt_col, use_comet):
     """Score one subset of rows and render the full results block."""
@@ -632,61 +696,20 @@ def render_results(srcs, cands, gts, dirs, key,
 
     # ---- blinded reviewer worksheet
     if "Needs review" in table.columns:
-        import random
         sel = table[table["Needs review"] != ""].copy()
         if len(sel):
-            order = list(sel.index)
-            random.Random(4242).shuffle(order)  # fixed seed, reproducible
-            sel = sel.loc[order]
-            review = pd.DataFrame({
-                "Review ID": [f"R{n + 1:03d}" for n in range(len(sel))],
-                "Direction": sel["Direction"] if "Direction" in sel.columns
-                             else "",
-                "Original": sel["Original script"].values,
-                "Interpretation": sel["Interpreter output"].values,
-                "Reference translation": sel["Ground truth"].values,
-                "Error type (Flores)": "",
-                "Clinical significance": "",
-                "Notes": "",
-            })
-            keydf = pd.DataFrame({
-                "Review ID": review["Review ID"].values,
-                "Row # in results": sel["#"].values,
-                "Selected by": sel["Needs review"].values,
-            })
-            rbuf = io.BytesIO()
-            with pd.ExcelWriter(rbuf, engine="openpyxl") as xl:
-                review.to_excel(xl, sheet_name="Review", index=False)
-                keydf.to_excel(xl, sheet_name="KEY - REMOVE BEFORE SENDING",
-                               index=False)
-                from openpyxl.worksheet.datavalidation import DataValidation
-                from openpyxl.utils import get_column_letter
-                ws = xl.book["Review"]
-                for i, w in enumerate([10, 16, 48, 48, 48, 22, 26, 30], 1):
-                    ws.column_dimensions[get_column_letter(i)].width = w
-                dv1 = DataValidation(
-                    type="list", allow_blank=True,
-                    formula1='"No error,Omission,Addition,Substitution,'
-                             'Editorialization,False fluency"')
-                dv2 = DataValidation(
-                    type="list", allow_blank=True,
-                    formula1='"No potential consequence,'
-                             'Potential consequence"')
-                ws.add_data_validation(dv1)
-                ws.add_data_validation(dv2)
-                dv1.add(f"F2:F{len(review) + 1}")
-                dv2.add(f"G2:G{len(review) + 1}")
             st.download_button(
                 "🧑‍⚕️ Download blinded reviewer worksheet (.xlsx)",
-                rbuf.getvalue(),
+                reviewer_xlsx(sel),
                 file_name="reviewer_worksheet.xlsx",
                 mime="application/vnd.openxmlformats-officedocument"
                      ".spreadsheetml.sheet", key=f"rev_{key}",
                 help="Selected sentences in randomized order (seed 4242), "
-                     "scores hidden, with dropdown columns for Flores error "
-                     "type and clinical significance. Delete the KEY sheet "
-                     "before sending to the reviewer; keep your copy for "
-                     "un-blinding.")
+                     "scores and reference translation hidden. One Yes/No "
+                     "column per Flores error type (an utterance can carry "
+                     "several), plus clinical significance. Delete the KEY "
+                     "sheet before sending to the reviewer; keep your copy "
+                     "for un-blinding.")
 
     st.info("**Reading the scores:** BLEU, chrF++ and TER measure *surface* "
             "overlap with the reference — they reward wording close to the "
