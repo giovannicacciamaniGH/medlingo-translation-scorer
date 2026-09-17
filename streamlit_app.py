@@ -122,17 +122,17 @@ def score_pairs(srcs: tuple, cands: tuple, gts: tuple, use_comet: bool):
             row["Ground truth"] = gts[i]
         row.update({"Interpreter output": c,
                     "BLEU": round(s, 1), "Wording": interpret(s),
-                    "Semantic (%)": round(sim * 100),
-                    "Meaning": meaning_verdict(sim),
+                    "Semantic Int↔Orig (%)": round(sim * 100),
+                    "Meaning Int↔Orig": meaning_verdict(sim),
                     "chrF++": round(sacrebleu.sentence_chrf(
                         c, [bleu_refs[i]], word_order=2).score, 1),
                     "TER": round(
                         sacrebleu.sentence_ter(c, [bleu_refs[i]]).score, 1),
                     "BERTScore": round(bert_f1[i], 1)})
         if has_gt:
-            row["Semantic vs GT (%)"] = round(float(ig_cosines[i]) * 100)
-            row["Semantic GT (%)"] = round(float(gt_cosines[i]) * 100)
-            row["Meaning (GT)"] = meaning_verdict(float(gt_cosines[i]))
+            row["Semantic Int↔GT (%)"] = round(float(ig_cosines[i]) * 100)
+            row["Semantic GT↔Orig (%)"] = round(float(gt_cosines[i]) * 100)
+            row["Meaning GT↔Orig"] = meaning_verdict(float(gt_cosines[i]))
         if comet_scores is not None:
             row["COMET"] = round(comet_scores[i] * 100)
         rows.append(row)
@@ -174,6 +174,64 @@ def autodetect(cols):
     return src, cand, gt
 
 
+def results_xlsx(table, summary_df) -> bytes:
+    """Results workbook with the same color coding as the on-screen table."""
+    from openpyxl.styles import PatternFill, Font
+    from openpyxl.utils import get_column_letter
+    WORD_X = {
+        "Almost no overlap": ("FFEBE9", "CF222E"),
+        "Low overlap": ("FFEBE9", "CF222E"),
+        "Gist preserved, heavily reworded": ("FFF1E5", "BC4C00"),
+        "Moderate overlap": ("FFF8C5", "7D4E00"),
+        "High overlap": ("DDF4FF", "0969DA"),
+        "Very high overlap": ("DAFBE1", "1A7F37"),
+        "Near-identical": ("DAFBE1", "1A7F37"),
+    }
+    MEAN_X = {
+        "Possible meaning change": ("FFEBE9", "CF222E"),
+        "Mostly preserved — review": ("FFF8C5", "7D4E00"),
+        "Meaning preserved": ("DAFBE1", "1A7F37"),
+    }
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as xl:
+        table.to_excel(xl, sheet_name="Per-sentence scores", index=False)
+        summary_df.to_excel(xl, sheet_name="Summary", index=False)
+        ws = xl.book["Per-sentence scores"]
+        cols = list(table.columns)
+        chip_maps = {}
+        for name, mapping in [("Wording", WORD_X),
+                              ("Meaning Int↔Orig", MEAN_X),
+                              ("Meaning GT↔Orig", MEAN_X)]:
+            if name in cols:
+                chip_maps[cols.index(name) + 1] = mapping
+        rev_idx = (cols.index("Needs review") + 1
+                   if "Needs review" in cols else None)
+        for r in range(2, len(table) + 2):
+            for cidx, mapping in chip_maps.items():
+                v = ws.cell(row=r, column=cidx).value
+                if v in mapping:
+                    bg, fg = mapping[v]
+                    cell = ws.cell(row=r, column=cidx)
+                    cell.fill = PatternFill("solid", fgColor=bg)
+                    cell.font = Font(color=fg, bold=True)
+            if rev_idx:
+                v = str(ws.cell(row=r, column=rev_idx).value or "")
+                pair = (("F3E8FF", "6639BA") if v.startswith("Rule")
+                        else ("EAEEF2", "57606A") if v == "Control" else None)
+                if pair:
+                    cell = ws.cell(row=r, column=rev_idx)
+                    cell.fill = PatternFill("solid", fgColor=pair[0])
+                    cell.font = Font(color=pair[1], bold=True)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for name in ("Original script", "Ground truth", "Interpreter output"):
+            if name in cols:
+                ws.column_dimensions[
+                    get_column_letter(cols.index(name) + 1)].width = 45
+        xl.book["Summary"].column_dimensions["A"].width = 55
+    return buf.getvalue()
+
+
 def render_results(srcs, cands, gts, dirs, key,
                    src_col, cand_col, gt_col, use_comet):
     """Score one subset of rows and render the full results block."""
@@ -191,9 +249,9 @@ def render_results(srcs, cands, gts, dirs, key,
         flags = []
         for i in range(len(table)):
             fired = []
-            meaning = table["Meaning"].iloc[i]
-            sem = table["Semantic (%)"].iloc[i]
-            semgt = table["Semantic GT (%)"].iloc[i]
+            meaning = table["Meaning Int↔Orig"].iloc[i]
+            sem = table["Semantic Int↔Orig (%)"].iloc[i]
+            semgt = table["Semantic GT↔Orig (%)"].iloc[i]
             if meaning == "Possible meaning change":
                 fired.append("1")
             elif meaning == "Mostly preserved — review":
@@ -343,7 +401,7 @@ def render_results(srcs, cands, gts, dirs, key,
     verdict_opts = ["All"] + [v for v in ["Possible meaning change",
                                           "Mostly preserved — review",
                                           "Meaning preserved"]
-                              if v in set(table["Meaning"])]
+                              if v in set(table["Meaning Int↔Orig"])]
     label_opts = ["All"] + [l for l in ["Almost no overlap", "Low overlap",
                                         "Gist preserved, heavily reworded",
                                         "Moderate overlap", "High overlap",
@@ -355,7 +413,7 @@ def render_results(srcs, cands, gts, dirs, key,
 
     view = table
     if pick_verdict != "All":
-        view = view[view["Meaning"] == pick_verdict]
+        view = view[view["Meaning Int↔Orig"] == pick_verdict]
     if pick_label != "All":
         view = view[view["Wording"] == pick_label]
     if "Needs review" in table.columns:
@@ -394,7 +452,7 @@ def render_results(srcs, cands, gts, dirs, key,
     }
     chip = "; border-radius:999px; text-align:center; font-weight:600"
     wording_cols = [c for c in ("Wording",) if c in view.columns]
-    meaning_cols = [c for c in ("Meaning", "Meaning (GT)") if c in view.columns]
+    meaning_cols = [c for c in ("Meaning Int↔Orig", "Meaning GT↔Orig") if c in view.columns]
     review_cols = [c for c in ("Needs review",) if c in view.columns]
 
     def review_style(v):
@@ -411,9 +469,9 @@ def render_results(srcs, cands, gts, dirs, key,
     ).map(review_style, subset=review_cols
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF++": "{:.1f}",
                                 "TER": "{:.1f}", "BERTScore": "{:.1f}",
-                                "Semantic (%)": "{:.0f}",
-                                "Semantic vs GT (%)": "{:.0f}",
-                                "Semantic GT (%)": "{:.0f}",
+                                "Semantic Int↔Orig (%)": "{:.0f}",
+                                "Semantic Int↔GT (%)": "{:.0f}",
+                                "Semantic GT↔Orig (%)": "{:.0f}",
                                 "COMET": "{:.0f}"}.items()
               if k in view.columns}, na_rep="")
     bleu_vs = f"Compares “{cand_col}” vs {ref_name}."
@@ -447,15 +505,15 @@ def render_results(srcs, cands, gts, dirs, key,
                  "HOW: banded from BLEU — <10 almost no overlap, 10–20 low, "
                  "20–30 gist/reworded, 30–40 moderate, 40–50 high, 50–60 very "
                  "high, ≥60 near-identical."),
-        "Semantic (%)": st.column_config.NumberColumn(
-            "Semantic (%)",
+        "Semantic Int↔Orig (%)": st.column_config.NumberColumn(
+            "Semantic Int↔Orig (%)",
             help=f"WHAT: meaning similarity, 0–100% (higher = same meaning, "
                  f"regardless of wording). {vs_orig} HOW: cosine similarity "
                  "between sentence embeddings from "
                  "paraphrase-multilingual-MiniLM-L12-v2 (Sentence-BERT, "
                  "Reimers & Gurevych 2019; method of TextSim_MTQE)."),
-        "Meaning": st.column_config.TextColumn(
-            "Meaning",
+        "Meaning Int↔Orig": st.column_config.TextColumn(
+            "Meaning Int↔Orig",
             help=f"WHAT: verdict on whether the meaning was preserved. "
                  f"{vs_orig} HOW: banded from semantic similarity — ≥75% "
                  "meaning preserved, 55–75% mostly preserved (review), "
@@ -489,24 +547,25 @@ def render_results(srcs, cands, gts, dirs, key,
                  "Unbabel/wmt22-comet-da model scoring the triplet source = "
                  f"“{src_col}”, translation = “{cand_col}”, reference = "
                  f"{ref_name} (Rei et al. 2020/2022)."),
-        "Semantic vs GT (%)": st.column_config.NumberColumn(
-            "Semantic vs GT (%)",
+        "Semantic Int↔GT (%)": st.column_config.NumberColumn(
+            "Semantic Int↔GT (%)",
             help=f"WHAT: meaning similarity of the interpreter's rendition "
                  f"to the certified reference, 0–100%. COMPARES: “{cand_col}” "
                  f"vs “{gt_col}” directly (same language). HOW: cosine of "
                  "multilingual sentence embeddings — the semantic "
                  "counterpart of BLEU/chrF++/TER."),
-        "Semantic GT (%)": st.column_config.NumberColumn(
-            "Semantic GT (%)",
+        "Semantic GT↔Orig (%)": st.column_config.NumberColumn(
+            "Semantic GT↔Orig (%)",
             help=f"WHAT: human benchmark — meaning similarity of “{gt_col}” "
                  f"vs “{src_col}”, 0–100%. HOW: same embedding cosine as the "
-                 "Semantic column. Compare with Semantic (%) to see whether "
-                 "the Interpreter preserves meaning as well as the human."),
-        "Meaning (GT)": st.column_config.TextColumn(
-            "Meaning (GT)",
+                 "other semantic columns. Compare with Semantic Int↔Orig (%) "
+                 "to see whether the Interpreter preserves meaning as well "
+                 "as the human."),
+        "Meaning GT↔Orig": st.column_config.TextColumn(
+            "Meaning GT↔Orig",
             help=f"WHAT: human benchmark — meaning verdict for “{gt_col}” vs "
-                 f"“{src_col}”. HOW: same ≥75% / 55–75% / <55% bands as the "
-                 "Meaning column, applied to Semantic GT (%)."),
+                 f"“{src_col}”. HOW: same ≥75% / 55–75% / <55% bands as "
+                 "Meaning Int↔Orig, applied to Semantic GT↔Orig (%)."),
     }
     if dirs:
         col_help["Direction"] = st.column_config.TextColumn(
@@ -528,7 +587,6 @@ def render_results(srcs, cands, gts, dirs, key,
                  column_config=col_help)
 
     # ---- download
-    buf = io.BytesIO()
     bleu_target = "ground truth" if gt_col else "original"
     summary_df = pd.DataFrame({
         "Metric": [f"Corpus BLEU (Interpreter vs {bleu_target})",
@@ -552,10 +610,8 @@ def render_results(srcs, cands, gts, dirs, key,
                   round(s["ig_sem_mean"], 3) if s["ig_sem_mean"] is not None else "n/a",
                   round(s["gt_sem_mean"], 3) if s["gt_sem_mean"] is not None else "n/a"],
     })
-    with pd.ExcelWriter(buf) as xl:
-        table.to_excel(xl, sheet_name="Per-sentence scores", index=False)
-        summary_df.to_excel(xl, sheet_name="Summary", index=False)
-    st.download_button("⬇️ Download full results (.xlsx)", buf.getvalue(),
+    st.download_button("⬇️ Download full results (.xlsx)",
+                       results_xlsx(table, summary_df),
                        file_name="translation_scores.xlsx",
                        mime="application/vnd.openxmlformats-officedocument"
                             ".spreadsheetml.sheet", key=f"dl_{key}")
