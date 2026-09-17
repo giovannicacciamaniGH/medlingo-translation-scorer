@@ -252,21 +252,17 @@ def render_results(srcs, cands, gts, dirs, key,
         for i in range(len(table)):
             fired = []
             meaning = table["Meaning Int↔Orig"].iloc[i]
-            sem = table["Semantic Int↔Orig (%)"].iloc[i]
-            semgt = table["Semantic GT↔Orig (%)"].iloc[i]
             if meaning == "Possible meaning change":
                 fired.append("1")
             elif meaning == "Mostly preserved — review":
                 fired.append("2")
-            if semgt - sem >= 20:
-                fired.append("3")
             if ("COMET" in table.columns
                     and table["COMET"].iloc[i] < 70
                     and meaning == "Meaning preserved"):
-                fired.append("4")
+                fired.append("3")
             n_gt = max(len(str(gts[i]).split()), 1)
             if len(str(cands[i]).split()) < 0.6 * n_gt:
-                fired.append("5")
+                fired.append("4")
             flags.append("Rule " + "+".join(fired) if fired else "")
         rng = random.Random(42)  # fixed seed -> reproducible control sample
         unflagged = [i for i, f in enumerate(flags) if not f]
@@ -423,22 +419,18 @@ def render_results(srcs, cands, gts, dirs, key,
         if st.checkbox(f"Show only sentences selected for clinical review "
                        f"({n_sel} of {len(table)})", key=f"nr_{key}",
                        help="Selection is automatic and reproducible — a "
-                            "sentence is selected if ANY rule fires. All "
-                            "rules use the Int↔Orig comparison (interpreter "
-                            "vs original): "
+                            "sentence is selected if ANY rule fires. The "
+                            "rules test only the interpreter's own output: "
                             "Rule 1 = Meaning Int↔Orig red (Semantic "
                             "Int↔Orig <55%). Rule 2 = Meaning Int↔Orig "
-                            "yellow (55–75%). Rule 3 = Semantic GT↔Orig "
-                            "minus Semantic Int↔Orig ≥20 points (interpreter "
-                            "below the human ceiling on the same sentence). "
-                            "Rule 4 = COMET <70 despite green Meaning "
-                            "Int↔Orig (fluent-but-wrong screen). Rule 5 = "
-                            "interpreter output <60% of the ground truth's "
-                            "word count (omission screen). 'Control' = "
-                            "random 10% of unflagged rows (fixed seed 42) "
-                            "to estimate the screen's false-negative rate. "
-                            "The 'Needs review' column shows which rule "
-                            "fired for each row."):
+                            "yellow (55–75%). Rule 3 = COMET <70 despite "
+                            "green Meaning Int↔Orig (fluent-but-wrong "
+                            "screen). Rule 4 = interpreter output <60% of "
+                            "the ground truth's word count (omission "
+                            "screen). 'Control' = random 10% of unflagged "
+                            "rows (fixed seed 42) to estimate the screen's "
+                            "false-negative rate. The 'Needs review' column "
+                            "shows which rule fired for each row."):
             view = view[view["Needs review"] != ""]
     st.caption(f"{len(view)} of {len(table)} sentences shown")
 
@@ -590,16 +582,14 @@ def render_results(srcs, cands, gts, dirs, key,
         col_help["Needs review"] = st.column_config.TextColumn(
             "Needs review",
             help="Pre-specified selection for clinical review; a sentence "
-                 "is selected if ANY rule fires. All rules use the Int↔Orig "
-                 "comparison. Rule 1: Meaning Int↔Orig red (Semantic "
-                 "Int↔Orig <55%). Rule 2: Meaning Int↔Orig yellow "
-                 "(55–75%). Rule 3: Semantic GT↔Orig − Semantic Int↔Orig "
-                 "≥20 points (interpreter below the human ceiling on this "
-                 "row). Rule 4: COMET <70 despite green Meaning Int↔Orig "
-                 "(fluent-but-wrong screen). Rule 5: interpreter output "
-                 "<60% of the ground truth's word count (omission screen). "
-                 "'Control' = random 10% of unflagged rows (seed 42) to "
-                 "estimate the screen's false-negative rate.")
+                 "is selected if ANY rule fires. The rules test only the "
+                 "interpreter's own output. Rule 1: Meaning Int↔Orig red "
+                 "(Semantic Int↔Orig <55%). Rule 2: Meaning Int↔Orig "
+                 "yellow (55–75%). Rule 3: COMET <70 despite green Meaning "
+                 "Int↔Orig (fluent-but-wrong screen). Rule 4: interpreter "
+                 "output <60% of the ground truth's word count (omission "
+                 "screen). 'Control' = random 10% of unflagged rows (seed "
+                 "42) to estimate the screen's false-negative rate.")
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
 
