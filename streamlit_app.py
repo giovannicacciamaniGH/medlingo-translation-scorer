@@ -238,54 +238,80 @@ FLORES_TYPES = ["Omission", "Addition", "Substitution",
                 "Editorialization", "False fluency"]
 
 
-def reviewer_xlsx(sel) -> bytes:
-    """Blinded worksheet: selected rows in randomized order, no reference
-    translation and no scores; one Yes/No column per Flores error type."""
-    import random
+def reviewer_xlsx(table) -> bytes:
+    """Reviewer worksheet: the ENTIRE conversation in its natural order
+    (for clinical context), no scores and no reference translation.
+    Utterances selected by the review rules are highlighted in yellow —
+    the reviewer codes only those rows (one Yes/No column per Flores
+    error type, plus clinical significance)."""
     from openpyxl.worksheet.datavalidation import DataValidation
     from openpyxl.utils import get_column_letter
     from openpyxl.styles import Font, PatternFill, Alignment
 
-    sel = sel.copy()
-    order = list(sel.index)
-    random.Random(4242).shuffle(order)  # fixed seed, reproducible
-    sel = sel.loc[order]
-
-    cols = {"Review ID": [f"R{n + 1:03d}" for n in range(len(sel))],
-            "Direction": (sel["Direction"].values
-                          if "Direction" in sel.columns else ""),
-            "Original": sel["Original script"].values,
-            "Interpretation": sel["Interpreter output"].values}
+    cols = {"#": table["#"].values}
+    if "Direction" in table.columns:
+        cols["Direction"] = table["Direction"].values
+    cols["Original"] = table["Original script"].values
+    cols["Interpretation"] = table["Interpreter output"].values
+    cols["REVIEW?"] = ["YES" if f else "" for f in table["Needs review"]]
     for t in FLORES_TYPES:
         cols[t] = ""
     cols["Clinical significance"] = ""
     cols["Notes"] = ""
     review = pd.DataFrame(cols)
     keydf = pd.DataFrame({
-        "Review ID": review["Review ID"].values,
-        "Row # in results": sel["#"].values,
-        "Selected by": sel["Needs review"].values,
+        "Row #": table["#"].values,
+        "Selected by": table["Needs review"].values,
     })
+    keydf = keydf[keydf["Selected by"] != ""]
+    instructions = pd.DataFrame({"Instructions for the reviewer": [
+        "The sheet contains the ENTIRE conversation, in order, so every "
+        "utterance can be judged in its clinical context.",
+        "Code ONLY the YELLOW-highlighted rows (REVIEW? = YES): for each, "
+        "set Yes/No in the five error-type columns and rate the clinical "
+        "significance.",
+        "Judge the Interpretation against the Original utterance (what "
+        "was actually said), using the surrounding conversation for "
+        "context.",
+        "Error types (Flores et al., 2003): Omission, Addition, "
+        "Substitution, Editorialization, False fluency. An utterance can "
+        "have several.",
+        "Use Notes for anything relevant, including errors you notice in "
+        "NON-highlighted rows.",
+    ]})
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xl:
         review.to_excel(xl, sheet_name="Review", index=False)
+        instructions.to_excel(xl, sheet_name="READ ME", index=False)
         keydf.to_excel(xl, sheet_name="KEY - REMOVE BEFORE SENDING",
                        index=False)
         ws = xl.book["Review"]
-        widths = [10, 16, 55, 55] + [14] * len(FLORES_TYPES) + [26, 30]
+        ncols = len(review.columns)
+        has_dir = "Direction" in review.columns
+        widths = ([6] + ([16] if has_dir else []) + [55, 55, 9]
+                  + [14] * len(FLORES_TYPES) + [26, 30])
         for i, w in enumerate(widths, 1):
             ws.column_dimensions[get_column_letter(i)].width = w
-        fill = PatternFill("solid", fgColor="0969DA")
+        header_fill = PatternFill("solid", fgColor="0969DA")
         for cell in ws[1]:
             cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = fill
+            cell.fill = header_fill
             cell.alignment = Alignment(vertical="center", wrap_text=True)
+        # highlight the full row of every selected utterance in yellow
+        yellow = PatternFill("solid", fgColor="FFF200")
+        flagged = [i for i, f in enumerate(table["Needs review"]) if f]
+        for i in flagged:
+            for c in range(1, ncols + 1):
+                ws.cell(row=i + 2, column=c).fill = yellow
+        for row in ws.iter_rows(min_row=2):
+            for cell in row[1 + int(has_dir):3 + int(has_dir)]:
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
         n = len(review) + 1
+        first = 5 + int(has_dir)  # first Flores column
         dv_yn = DataValidation(type="list", allow_blank=True,
                                formula1='"Yes,No"')
         ws.add_data_validation(dv_yn)
-        first = 5  # first Flores column (E)
         for j in range(len(FLORES_TYPES)):
             col = get_column_letter(first + j)
             dv_yn.add(f"{col}2:{col}{n}")
@@ -295,6 +321,8 @@ def reviewer_xlsx(sel) -> bytes:
         ws.add_data_validation(dv_sig)
         sig_col = get_column_letter(first + len(FLORES_TYPES))
         dv_sig.add(f"{sig_col}2:{sig_col}{n}")
+        ws.freeze_panes = "A2"
+        xl.book["READ ME"].column_dimensions["A"].width = 110
     return buf.getvalue()
 
 
@@ -696,20 +724,20 @@ def render_results(srcs, cands, gts, dirs, key,
 
     # ---- blinded reviewer worksheet
     if "Needs review" in table.columns:
-        sel = table[table["Needs review"] != ""].copy()
-        if len(sel):
+        if (table["Needs review"] != "").any():
             st.download_button(
-                "🧑‍⚕️ Download blinded reviewer worksheet (.xlsx)",
-                reviewer_xlsx(sel),
+                "🧑‍⚕️ Download reviewer worksheet (.xlsx)",
+                reviewer_xlsx(table),
                 file_name="reviewer_worksheet.xlsx",
                 mime="application/vnd.openxmlformats-officedocument"
                      ".spreadsheetml.sheet", key=f"rev_{key}",
-                help="Selected sentences in randomized order (seed 4242), "
-                     "scores and reference translation hidden. One Yes/No "
-                     "column per Flores error type (an utterance can carry "
-                     "several), plus clinical significance. Delete the KEY "
-                     "sheet before sending to the reviewer; keep your copy "
-                     "for un-blinding.")
+                help="The entire conversation in its natural order (for "
+                     "clinical context), scores and reference translation "
+                     "hidden. Utterances selected by the review rules are "
+                     "highlighted in yellow — the reviewer codes only "
+                     "those: one Yes/No column per Flores error type plus "
+                     "clinical significance. Delete the KEY sheet before "
+                     "sending; keep your copy for un-blinding.")
 
     st.info("**Reading the scores:** BLEU, chrF++ and TER measure *surface* "
             "overlap with the reference — they reward wording close to the "
