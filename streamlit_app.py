@@ -183,6 +183,38 @@ def render_results(srcs, cands, gts, dirs, key,
     if dirs:
         table.insert(1, "Direction", list(dirs))
 
+    # ---- review-selection rules (pre-specified, reproducible)
+    # A sentence is selected if ANY rule fires; plus a seeded 10% random
+    # control sample of unflagged rows to estimate the false-negative rate.
+    if gts:
+        import random
+        flags = []
+        for i in range(len(table)):
+            fired = []
+            meaning = table["Meaning"].iloc[i]
+            sem = table["Semantic (%)"].iloc[i]
+            semgt = table["Semantic GT (%)"].iloc[i]
+            if meaning == "Possible meaning change":
+                fired.append("1")
+            elif meaning == "Mostly preserved — review":
+                fired.append("2")
+            if semgt - sem >= 20:
+                fired.append("3")
+            if ("COMET" in table.columns
+                    and table["COMET"].iloc[i] < 70
+                    and meaning == "Meaning preserved"):
+                fired.append("4")
+            n_gt = max(len(str(gts[i]).split()), 1)
+            if len(str(cands[i]).split()) < 0.6 * n_gt:
+                fired.append("5")
+            flags.append("Rule " + "+".join(fired) if fired else "")
+        rng = random.Random(42)  # fixed seed -> reproducible control sample
+        unflagged = [i for i, f in enumerate(flags) if not f]
+        n_ctrl = round(0.10 * len(unflagged))
+        for i in (rng.sample(unflagged, n_ctrl) if n_ctrl else []):
+            flags[i] = "Control"
+        table["Needs review"] = flags
+
     # ---- headline scores
     ref_name = f"“{gt_col}” (ground truth)" if gt_col else f"“{src_col}” (original)"
     vs_orig = f"Compares “{cand_col}” vs “{src_col}” (original)."
@@ -326,6 +358,11 @@ def render_results(srcs, cands, gts, dirs, key,
         view = view[view["Meaning"] == pick_verdict]
     if pick_label != "All":
         view = view[view["Wording"] == pick_label]
+    if "Needs review" in table.columns:
+        n_sel = int((table["Needs review"] != "").sum())
+        if st.checkbox(f"Show only sentences selected for clinical review "
+                       f"({n_sel} of {len(table)})", key=f"nr_{key}"):
+            view = view[view["Needs review"] != ""]
     st.caption(f"{len(view)} of {len(table)} sentences shown")
 
     WORDING_COLORS = {
@@ -345,10 +382,20 @@ def render_results(srcs, cands, gts, dirs, key,
     chip = "; border-radius:999px; text-align:center; font-weight:600"
     wording_cols = [c for c in ("Wording",) if c in view.columns]
     meaning_cols = [c for c in ("Meaning", "Meaning (GT)") if c in view.columns]
+    review_cols = [c for c in ("Needs review",) if c in view.columns]
+
+    def review_style(v):
+        if str(v).startswith("Rule"):
+            return "background-color:#f3e8ff; color:#6639ba" + chip
+        if v == "Control":
+            return "background-color:#eaeef2; color:#57606a" + chip
+        return ""
+
     styled = view.style.map(
         lambda v: WORDING_COLORS.get(v, "") + chip, subset=wording_cols
     ).map(
         lambda v: MEANING_COLORS.get(v, "") + chip, subset=meaning_cols
+    ).map(review_style, subset=review_cols
     ).format({k: v for k, v in {"BLEU": "{:.1f}", "chrF++": "{:.1f}",
                                 "TER": "{:.1f}", "BERTScore": "{:.1f}",
                                 "Semantic (%)": "{:.0f}",
@@ -452,6 +499,18 @@ def render_results(srcs, cands, gts, dirs, key,
         col_help["Direction"] = st.column_config.TextColumn(
             "Direction", help="Your direction/speaker label for this row "
                               "(e.g. Doctor En→Es / Patient Es→En).")
+    if "Needs review" in view.columns:
+        col_help["Needs review"] = st.column_config.TextColumn(
+            "Needs review",
+            help="Pre-specified selection for clinical review; a sentence is "
+                 "selected if ANY rule fires. Rule 1: Meaning red (semantic "
+                 "vs original <55%). Rule 2: Meaning yellow (55–75%). Rule "
+                 "3: interpreter ≥20 points below the human ceiling on this "
+                 "row. Rule 4: COMET <70 despite green Meaning "
+                 "(fluent-but-wrong screen). Rule 5: interpreter output "
+                 "<60% of the ground truth's word count (omission screen). "
+                 "'Control' = random 10% of unflagged rows (seed 42) to "
+                 "estimate the screen's false-negative rate.")
     st.dataframe(styled, use_container_width=True, hide_index=True, height=520,
                  column_config=col_help)
 
@@ -487,6 +546,64 @@ def render_results(srcs, cands, gts, dirs, key,
                        file_name="translation_scores.xlsx",
                        mime="application/vnd.openxmlformats-officedocument"
                             ".spreadsheetml.sheet", key=f"dl_{key}")
+
+    # ---- blinded reviewer worksheet
+    if "Needs review" in table.columns:
+        import random
+        sel = table[table["Needs review"] != ""].copy()
+        if len(sel):
+            order = list(sel.index)
+            random.Random(4242).shuffle(order)  # fixed seed, reproducible
+            sel = sel.loc[order]
+            review = pd.DataFrame({
+                "Review ID": [f"R{n + 1:03d}" for n in range(len(sel))],
+                "Direction": sel["Direction"] if "Direction" in sel.columns
+                             else "",
+                "Original": sel["Original script"].values,
+                "Interpretation": sel["Interpreter output"].values,
+                "Reference translation": sel["Ground truth"].values,
+                "Error type (Flores)": "",
+                "Clinical significance": "",
+                "Notes": "",
+            })
+            keydf = pd.DataFrame({
+                "Review ID": review["Review ID"].values,
+                "Row # in results": sel["#"].values,
+                "Selected by": sel["Needs review"].values,
+            })
+            rbuf = io.BytesIO()
+            with pd.ExcelWriter(rbuf, engine="openpyxl") as xl:
+                review.to_excel(xl, sheet_name="Review", index=False)
+                keydf.to_excel(xl, sheet_name="KEY - REMOVE BEFORE SENDING",
+                               index=False)
+                from openpyxl.worksheet.datavalidation import DataValidation
+                from openpyxl.utils import get_column_letter
+                ws = xl.book["Review"]
+                for i, w in enumerate([10, 16, 48, 48, 48, 22, 26, 30], 1):
+                    ws.column_dimensions[get_column_letter(i)].width = w
+                dv1 = DataValidation(
+                    type="list", allow_blank=True,
+                    formula1='"No error,Omission,Addition,Substitution,'
+                             'Editorialization,False fluency"')
+                dv2 = DataValidation(
+                    type="list", allow_blank=True,
+                    formula1='"No potential consequence,'
+                             'Potential consequence"')
+                ws.add_data_validation(dv1)
+                ws.add_data_validation(dv2)
+                dv1.add(f"F2:F{len(review) + 1}")
+                dv2.add(f"G2:G{len(review) + 1}")
+            st.download_button(
+                "🧑‍⚕️ Download blinded reviewer worksheet (.xlsx)",
+                rbuf.getvalue(),
+                file_name="reviewer_worksheet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument"
+                     ".spreadsheetml.sheet", key=f"rev_{key}",
+                help="Selected sentences in randomized order (seed 4242), "
+                     "scores hidden, with dropdown columns for Flores error "
+                     "type and clinical significance. Delete the KEY sheet "
+                     "before sending to the reviewer; keep your copy for "
+                     "un-blinding.")
 
     st.info("**Reading the scores:** BLEU, chrF++ and TER measure *surface* "
             "overlap with the reference — they reward wording close to the "
