@@ -8,3 +8,4 @@ unbabel-comet==2.2.7
 scikit-learn
 bert-score
 PyYAML==6.0.2
+setuptools<81
